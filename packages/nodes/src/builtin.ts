@@ -642,10 +642,38 @@ export const SPLIT_TONE_NODE: NodeDef = {
   },
 }
 
+/**
+ * LUT — applies a 3D colour lookup table loaded from a `.cube` file (the format
+ * Resolve / Adobe / film-emulation packs ship). The actual lattice is uploaded
+ * per node instance via `Engine.setNodeLut`; here the kernel just samples it
+ * (the compiler injects the `grade_apply_lut` trilinear helper for `lut` nodes)
+ * and dials it against the original with `amount`. Inputs are clamped to the
+ * 0..1 domain the LUT is defined over.
+ */
+export const LUT_NODE: NodeDef = {
+  type: 'lut',
+  label: 'LUT',
+  category: 'Color',
+  role: 'effect',
+  fx: true,
+  lut: true,
+  accent: '#06b6d4',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let graded = grade_apply_lut(color);
+      color = mix(color, graded, P.amount);
+    `,
+  },
+}
+
 export const BUILTIN_NODES: NodeDef[] = [
   INPUT_NODE,
   COLOR_SPACE_NODE,
   COLOR_CORRECT_NODE,
+  LUT_NODE,
   GLOW_NODE,
   HALATION_NODE,
   SPLIT_TONE_NODE,

@@ -8,6 +8,8 @@ The core UI (node graph, viewer, inspector) ships built-in. Everything else —
 node types, color transforms, scopes — is a plugin against a small, documented
 node SDK.
 
+<img width="1512" height="819" alt="Grade editor" src="https://github.com/user-attachments/assets/35d79d07-b9e9-4c1a-90ad-bb9464e15008" />
+
 ## Packages
 
 | Package         | What it is                                                                                            |

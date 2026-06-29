@@ -1,7 +1,7 @@
 import { type RefObject, useEffect, useRef, useState } from 'react'
 import { Engine } from '@grade/engine'
 import { registry } from './registry'
-import { useEditor } from './store'
+import { type LoadedLut, useEditor } from './store'
 
 export type EngineStatus = 'unsupported' | 'initializing' | 'ready' | 'error'
 
@@ -81,6 +81,29 @@ export function useEngine(
       for (const fx of n.data.fx) engine.setNodeValues(`${n.id}:${fx.id}`, fx.values)
     }
   }, [nodes])
+
+  // Push loaded LUTs out-of-band (they're textures, not scalar params). Tracked
+  // by reference so a LUT only re-uploads when the file actually changes — and
+  // reset whenever the engine is recreated, so a fresh engine gets every LUT.
+  const storeEngine = useEditor((s) => s.engine)
+  const lastLut = useRef(new Map<string, LoadedLut | undefined>())
+  useEffect(() => {
+    lastLut.current.clear()
+  }, [storeEngine])
+  useEffect(() => {
+    const engine = engineRef.current
+    if (!engine) return
+    for (const n of nodes) {
+      for (const fx of n.data.fx) {
+        if (!registry.get(fx.type)?.lut) continue
+        const key = `${n.id}:${fx.id}`
+        if (lastLut.current.get(key) !== fx.lut) {
+          engine.setNodeLut(key, fx.lut ?? null)
+          lastLut.current.set(key, fx.lut)
+        }
+      }
+    }
+  }, [nodes, storeEngine])
 
   // Feed the imported clip.
   useEffect(() => {
