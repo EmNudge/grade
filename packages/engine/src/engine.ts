@@ -30,6 +30,14 @@ export interface EngineInfo {
   features: string[]
 }
 
+/** A graded frame read back off the GPU for the scopes / chroma-warp overlay. */
+export interface ScopeFrame {
+  data: Uint8ClampedArray
+  format: 'RGBA' | 'BGRA'
+  width: number
+  height: number
+}
+
 interface RuntimePass extends CompiledPass {
   pipeline: GPUComputePipeline
   uniform: GPUBuffer
@@ -73,12 +81,20 @@ export class Engine {
   private scopeBuf: GPUBuffer | undefined = undefined
   private scopeW = 0
   private scopeH = 0
+  // Coalesce concurrent same-size readbacks (the scopes panel + the chroma-warp
+  // overlay both sample) so they share one GPU readback instead of racing on the
+  // single scope buffer.
+  private scopeInflight: Promise<ScopeFrame | null> | null = null
+  private scopeInflightKey = ''
 
   // Histogram tap: the pass whose *input* texture we snapshot each frame (the
   // signal entering a node, before its own grade) so the curve editor can show
   // an upstream distribution. Captured into a dedicated small target during the
   // live loop, then read back on demand.
   private histPassId: string | null = null
+  // Whether the histogram tap snapshots the pass's input (signal before its
+  // grade) or output (after). Lets the curve editor compare pre/post.
+  private histMode: 'input' | 'output' = 'input'
   private histReady = false
   private histTex: GPUTexture | undefined = undefined
   private histBuf: GPUBuffer | undefined = undefined
@@ -294,15 +310,19 @@ export class Engine {
    * it just reblits the retained final view into a dedicated readback target.
    * Returns null until the live loop has rendered at least one frame.
    */
-  async sampleScopes(
-    width: number,
-    height: number,
-  ): Promise<{
-    data: Uint8ClampedArray
-    format: 'RGBA' | 'BGRA'
-    width: number
-    height: number
-  } | null> {
+  async sampleScopes(width: number, height: number): Promise<ScopeFrame | null> {
+    // Share an in-flight readback of the same size between concurrent callers.
+    const key = `${width}x${height}`
+    if (this.scopeInflight && this.scopeInflightKey === key) return this.scopeInflight
+    const p = this.readbackScopes(width, height).finally(() => {
+      if (this.scopeInflight === p) this.scopeInflight = null
+    })
+    this.scopeInflight = p
+    this.scopeInflightKey = key
+    return p
+  }
+
+  private async readbackScopes(width: number, height: number): Promise<ScopeFrame | null> {
     const src = this.lastFinal
     if (!src || this.width === 0) return null
     this.ensureScopeTarget(width, height)
@@ -352,14 +372,15 @@ export class Engine {
   }
 
   /**
-   * Choose which pass's *input* the live loop snapshots for the histogram tap,
-   * by compiled pass id (`${nodeId}:${fxId}`). Pass null to stop sampling. The
-   * snapshot is the signal entering that pass — i.e. everything upstream of it,
-   * without that pass's own grade applied.
+   * Choose which pass the live loop snapshots for the histogram tap, by compiled
+   * pass id (`${nodeId}:${fxId}`). Pass null to stop sampling. `mode` selects the
+   * signal entering that pass (`'input'`, everything upstream, pre-grade) or
+   * leaving it (`'output'`, with the pass's own grade applied).
    */
-  setHistogramSource(passId: string | null): void {
-    if (passId === this.histPassId) return
+  setHistogramSource(passId: string | null, mode: 'input' | 'output' = 'input'): void {
+    if (passId === this.histPassId && mode === this.histMode) return
     this.histPassId = passId
+    this.histMode = mode
     this.histReady = false
   }
 
@@ -516,9 +537,9 @@ export class Engine {
     let final: GPUTexture = this.sourceTex
     let writeToA = true
     for (const pass of this.passes) {
-      // Histogram tap: snapshot this pass's input (everything upstream of it,
-      // pre-grade) into the dedicated target before the pass runs.
-      if (pass.nodeId === this.histPassId && this.histTex) {
+      // Histogram tap (input mode): snapshot this pass's input (everything
+      // upstream of it, pre-grade) into the dedicated target before it runs.
+      if (this.histMode === 'input' && pass.nodeId === this.histPassId && this.histTex) {
         this.blit(encoder, this.histTex.createView(), srcView)
         this.histReady = true
       }
@@ -548,6 +569,13 @@ export class Engine {
       srcView = dstTex.createView()
       final = dstTex
       writeToA = !writeToA
+
+      // Histogram tap (output mode): snapshot this pass's output, after its own
+      // grade has been applied.
+      if (this.histMode === 'output' && pass.nodeId === this.histPassId && this.histTex) {
+        this.blit(encoder, this.histTex.createView(), srcView)
+        this.histReady = true
+      }
     }
 
     return final.createView()
