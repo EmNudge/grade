@@ -197,6 +197,37 @@ function chromaParams(): ParamDef[] {
 }
 
 /**
+ * Color Warp params — the second half of DaVinci's Color Warper: a hue-vs-
+ * *lightness* grid. Per hue sector, `lw_h_*` bends the hue and `lw_l_*` scales
+ * its luminance. Neutral by default (no hue shift, ×1 luma), so it's a no-op
+ * until used. Complements the chroma (hue/sat) warp above.
+ */
+function colorWarpParams(): ParamDef[] {
+  return CHROMA_HUES.flatMap((h): ParamDef[] => [
+    {
+      key: `lw_h_${h.key}`,
+      label: `${h.label} Hue`,
+      group: 'Color Warp',
+      type: 'float',
+      default: 0,
+      min: -1,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: `lw_l_${h.key}`,
+      label: `${h.label} Luma`,
+      group: 'Color Warp',
+      type: 'float',
+      default: 1,
+      min: 0,
+      max: 2,
+      step: 0.01,
+    },
+  ])
+}
+
+/**
  * Color Correction — Lift / Gamma / Gain / Offset color wheels plus per-channel
  * tone Curves (variable control points, linear interpolation). Lift sets the
  * black point, Gain the white point, Gamma the midtones. This is the base of
@@ -226,6 +257,7 @@ export const COLOR_CORRECT_NODE: NodeDef = {
     ...curvePts('b'),
     { key: 'crv_smooth', label: 'Smooth', type: 'bool', default: false, group: 'Curves' },
     ...chromaParams(),
+    ...colorWarpParams(),
   ],
   kernel: {
     lib: /* wgsl */ `
@@ -317,6 +349,22 @@ export const COLOR_CORRECT_NODE: NodeDef = {
       hsv.x = fract(hsv.x + dHue);
       hsv.y = clamp(hsv.y * mSat, 0.0, 1.0);
       color = grade_hsv2rgb(hsv);
+
+      // Color Warp: per-hue hue-bend + luminance gain (DaVinci's hue-vs-
+      // lightness grid). Weighted by saturation so neutrals stay neutral.
+      var hsvL = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+      var lwH = array<f32, 6>(P.lw_h_r, P.lw_h_y, P.lw_h_g, P.lw_h_c, P.lw_h_b, P.lw_h_m);
+      var lwL = array<f32, 6>(P.lw_l_r, P.lw_l_y, P.lw_l_g, P.lw_l_c, P.lw_l_b, P.lw_l_m);
+      let lh6 = fract(hsvL.x) * 6.0;
+      let li = i32(floor(lh6)) % 6;
+      let lj = (li + 1) % 6;
+      let lf = fract(lh6);
+      let lwHue = mix(lwH[li], lwH[lj], lf) * 0.1; // ±1 -> ±36°
+      let lwLum = mix(lwL[li], lwL[lj], lf);
+      let lwW = hsvL.y; // saturation weight: grays untouched
+      hsvL.x = fract(hsvL.x + lwHue * lwW);
+      hsvL.z = clamp(hsvL.z * mix(1.0, lwLum, lwW), 0.0, 4.0);
+      color = grade_hsv2rgb(hsvL);
     `,
   },
 }
