@@ -199,6 +199,41 @@ const curveCall = (ch: string, inp: string) =>
   `P.crv${ch}_x0, P.crv${ch}_x1, P.crv${ch}_x2, P.crv${ch}_x3, P.crv${ch}_x4, ` +
   `P.crv${ch}_y0, P.crv${ch}_y1, P.crv${ch}_y2, P.crv${ch}_y3, P.crv${ch}_y4, P.crv_smooth)`
 
+/** Chroma Warp hue sectors (the 6 around the wheel), used by the shader + UI. */
+export const CHROMA_HUES = [
+  { key: 'r', label: 'Red', color: '#ff5a5a' },
+  { key: 'y', label: 'Yellow', color: '#ffd25a' },
+  { key: 'g', label: 'Green', color: '#5aff7d' },
+  { key: 'c', label: 'Cyan', color: '#5affff' },
+  { key: 'b', label: 'Blue', color: '#5a7dff' },
+  { key: 'm', label: 'Magenta', color: '#d25aff' },
+] as const
+
+function chromaParams(): ParamDef[] {
+  return CHROMA_HUES.flatMap((h): ParamDef[] => [
+    {
+      key: `cw_h_${h.key}`,
+      label: `${h.label} Hue`,
+      group: 'Chroma',
+      type: 'float',
+      default: 0,
+      min: -1,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: `cw_s_${h.key}`,
+      label: `${h.label} Sat`,
+      group: 'Chroma',
+      type: 'float',
+      default: 1,
+      min: 0,
+      max: 2,
+      step: 0.01,
+    },
+  ])
+}
+
 /**
  * Color Correction — Lift / Gamma / Gain / Offset color wheels plus per-channel
  * tone Curves (variable control points, linear interpolation). Lift sets the
@@ -221,6 +256,7 @@ export const COLOR_CORRECT_NODE: NodeDef = {
     ...curvePts('g'),
     ...curvePts('b'),
     { key: 'crv_smooth', label: 'Smooth', type: 'bool', default: false, group: 'Curves' },
+    ...chromaParams(),
   ],
   kernel: {
     lib: /* wgsl */ `
@@ -257,6 +293,20 @@ export const COLOR_CORRECT_NODE: NodeDef = {
         }
         return ys[cnt - 1];
       }
+
+      fn grade_rgb2hsv(c: vec3<f32>) -> vec3<f32> {
+        let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+        let p = mix(vec4<f32>(c.bg, K.wz), vec4<f32>(c.gb, K.xy), step(c.b, c.g));
+        let q = mix(vec4<f32>(p.xyw, c.r), vec4<f32>(c.r, p.yzx), step(p.x, c.r));
+        let d = q.x - min(q.w, q.y);
+        let e = 1e-10;
+        return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+      }
+      fn grade_hsv2rgb(c: vec3<f32>) -> vec3<f32> {
+        let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+        let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
+      }
     `,
     body: /* wgsl */ `
       let lift = vec3<f32>(P.lift_m) + vec3<f32>(P.lift_r, P.lift_g, P.lift_b);
@@ -270,6 +320,20 @@ export const COLOR_CORRECT_NODE: NodeDef = {
       // per-channel tone curves, then the master curve.
       color = vec3<f32>(${curveCall('r', 'color.r')}, ${curveCall('g', 'color.g')}, ${curveCall('b', 'color.b')});
       color = vec3<f32>(${curveCall('m', 'color.r')}, ${curveCall('m', 'color.g')}, ${curveCall('m', 'color.b')});
+
+      // Chroma Warp: per-hue hue-shift + saturation, blended around the wheel.
+      var hsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+      var cwH = array<f32, 6>(P.cw_h_r, P.cw_h_y, P.cw_h_g, P.cw_h_c, P.cw_h_b, P.cw_h_m);
+      var cwS = array<f32, 6>(P.cw_s_r, P.cw_s_y, P.cw_s_g, P.cw_s_c, P.cw_s_b, P.cw_s_m);
+      let h6 = fract(hsv.x) * 6.0;
+      let si = i32(floor(h6)) % 6;
+      let sj = (si + 1) % 6;
+      let sf = fract(h6);
+      let dHue = mix(cwH[si], cwH[sj], sf) * 0.1; // ±1 -> ±36°
+      let mSat = mix(cwS[si], cwS[sj], sf);
+      hsv.x = fract(hsv.x + dHue);
+      hsv.y = clamp(hsv.y * mSat, 0.0, 1.0);
+      color = grade_hsv2rgb(hsv);
     `,
   },
 }

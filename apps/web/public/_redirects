@@ -1,0 +1,2 @@
+# SPA fallback: serve the prerendered shell for client-side routes.
+/*    /index.html    200

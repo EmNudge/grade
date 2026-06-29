@@ -13,9 +13,9 @@ node SDK.
 | Package         | What it is                                                                                            |
 | --------------- | ----------------------------------------------------------------------------------------------------- |
 | `@grade/color`  | Color science: transfer functions, gamut matrices, and the WGSL snippets implementing them. Pure.     |
-| `@grade/engine` | The WebGPU render graph. Compiles a node DAG into a chain of compute passes over GPU textures.         |
-| `@grade/nodes`  | The node SDK + built-in nodes (Input, Color Space Transform, Contrast/Brightness, Output) + registry.  |
-| `apps/web`      | The editor: React Flow node graph, clip import, live WebGPU viewer, inspector.                          |
+| `@grade/engine` | The WebGPU render graph. Compiles a node DAG into a chain of compute passes over GPU textures.        |
+| `@grade/nodes`  | The node SDK + built-in nodes (Input, Color Space Transform, Contrast/Brightness, Output) + registry. |
+| `apps/web`      | The editor: React Flow node graph, clip import, live WebGPU viewer, inspector.                        |
 
 ## Architecture
 

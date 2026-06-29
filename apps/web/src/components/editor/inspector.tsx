@@ -3,6 +3,7 @@ import type { NodeDef, ParamDef } from '@grade/nodes'
 import { Plus, X } from 'lucide-react'
 import { registry } from '../../editor/registry'
 import { type FxInstance, type NodeValues, useEditor } from '../../editor/store'
+import { ChromaWarp } from './chroma-warp'
 import { ColorWheels } from './color-wheels'
 import { CurveEditor } from './curve-editor'
 import { Button } from '../ui/button'
@@ -133,12 +134,16 @@ function FxPanel({
         <TabsList variant="line" className="mb-1 self-start">
           <TabsTrigger value="wheels">Wheels</TabsTrigger>
           <TabsTrigger value="curves">Curves</TabsTrigger>
+          <TabsTrigger value="chroma">Chroma Warp</TabsTrigger>
         </TabsList>
         <TabsContent value="wheels">
           <ColorWheels def={def} values={fx.values} onChange={onChange} />
         </TabsContent>
         <TabsContent value="curves" className="p-2">
           <CurveEditor values={fx.values} onChange={onChange} />
+        </TabsContent>
+        <TabsContent value="chroma" className="p-2">
+          <ChromaWarp values={fx.values} onChange={onChange} />
         </TabsContent>
       </Tabs>
     )
