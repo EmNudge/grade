@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { CHROMA_HUES, COLOR_CORRECT_NODE, createDefaultRegistry } from './builtin'
 import { defaultValues } from './registry'
 

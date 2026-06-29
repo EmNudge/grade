@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test } from 'vitest'
 import { parseCubeLut } from './lut'
 
 // A minimal 2³ identity LUT in .cube form (red-fastest), with comments + title.

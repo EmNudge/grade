@@ -3,7 +3,7 @@
   "include": ["src/**/*.ts"],
   "compilerOptions": {
     "lib": ["ESNext", "DOM"],
-    "types": ["@webgpu/types", "bun-types"],
+    "types": ["@webgpu/types", "node"],
     "paths": {
       "@grade/color": ["../color/src/index.ts"],
       "@grade/nodes": ["../nodes/src/index.ts"]

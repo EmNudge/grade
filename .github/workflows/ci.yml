@@ -26,16 +26,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up proto toolchain (moon + bun)
+      - name: Set up proto toolchain (moon + pnpm)
         uses: moonrepo/setup-toolchain@v0
         with:
           auto-install: true
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Format, lint & typecheck
-        run: bun run check
+        run: pnpm run check
 
   # WGSL validation runs in a separate, parallel job: building/installing naga
   # is slower than the checks above, so isolating it keeps the fast job fast.
@@ -51,13 +51,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up proto toolchain (moon + bun)
+      - name: Set up proto toolchain (moon + pnpm)
         uses: moonrepo/setup-toolchain@v0
         with:
           auto-install: true
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Install naga (WGSL validator)
         uses: baptiste0928/cargo-install@v3

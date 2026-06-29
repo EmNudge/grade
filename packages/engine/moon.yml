@@ -5,6 +5,6 @@ layer: 'library'
 
 tasks:
   test:
-    command: 'bun test'
+    command: 'pnpm test'
     inputs:
       - 'src/**/*'
