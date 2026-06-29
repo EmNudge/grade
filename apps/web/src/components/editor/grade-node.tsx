@@ -54,7 +54,9 @@ export function GradeNodeView({ id, data }: NodeProps<GradeNodeType>) {
       >
         <span
           className="size-2 shrink-0 rounded-full"
-          style={{ background: disabled ? 'var(--muted-foreground)' : (data.accent ?? CORRECTOR_ACCENT) }}
+          style={{
+            background: disabled ? 'var(--muted-foreground)' : (data.accent ?? CORRECTOR_ACCENT),
+          }}
         />
         <span className={cn('truncate', disabled && 'line-through')}>
           {data.label ?? 'Corrector'}

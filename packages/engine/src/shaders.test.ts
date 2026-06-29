@@ -45,6 +45,7 @@ for (const def of shaderNodes) {
       const diagnostics = `${e.stderr?.toString() ?? ''}${e.stdout?.toString() ?? ''}`.trim()
       throw new Error(
         `naga rejected the "${def.type}" shader:\n\n${diagnostics}\n\n--- WGSL ---\n${wgsl}`,
+        { cause: err },
       )
     } finally {
       rmSync(dir, { recursive: true, force: true })

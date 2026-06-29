@@ -4,3 +4,9 @@ $schema: 'https://moonrepo.dev/schemas/workspace.json'
 projects:
   - 'apps/*'
   - 'packages/*'
+
+# Be explicit about the default branch so VCS/affected detection (and CI, which
+# checks out with fetch-depth: 0) resolves it deterministically.
+vcs:
+  client: 'git'
+  defaultBranch: 'main'

@@ -107,6 +107,7 @@ export function NodeGraph() {
                       className="size-4 rounded-full ring-1 ring-inset ring-black/30 transition-transform hover:scale-110"
                       style={{ background: c }}
                       title={c}
+                      aria-label={`Set node colour ${c}`}
                     />
                   ))}
                 </div>

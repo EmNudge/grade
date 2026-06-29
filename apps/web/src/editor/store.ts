@@ -236,11 +236,9 @@ export const useEditor = create<EditorState>((set, get) => {
         n.data.role === 'effect' ? { ...n, data: { ...n.data, enabled: !n.data.enabled } } : n,
       ),
 
-    setNodeLabel: (id, label) =>
-      mapNode(id, (n) => ({ ...n, data: { ...n.data, label } })),
+    setNodeLabel: (id, label) => mapNode(id, (n) => ({ ...n, data: { ...n.data, label } })),
 
-    setNodeAccent: (id, accent) =>
-      mapNode(id, (n) => ({ ...n, data: { ...n.data, accent } })),
+    setNodeAccent: (id, accent) => mapNode(id, (n) => ({ ...n, data: { ...n.data, accent } })),
 
     addCorrectorAt: (pos) =>
       set((s) => {
@@ -261,7 +259,7 @@ export const useEditor = create<EditorState>((set, get) => {
         },
       })),
 
-    setActiveFx: (fxId) => set({ activeFxId: fxId }),
+    setActiveFx: (id) => set({ activeFxId: id }),
 
     addFx: (nodeId, type) =>
       set((s) => {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import fc from 'fast-check'
+import * as fc from 'fast-check'
 import {
   applyMat3,
   AWG3_TO_REC709,
@@ -107,9 +107,13 @@ describe('display gamma', () => {
 
   test('clamps negative input to 0 (no NaN from fractional powers)', () => {
     fc.assert(
-      fc.property(fc.double({ min: -10, max: 0, noNaN: true }), fc.double({ min: 1.5, max: 3, noNaN: true }), (l, g) => {
-        expect(linearToGamma(l, g)).toBe(0)
-      }),
+      fc.property(
+        fc.double({ min: -10, max: 0, noNaN: true }),
+        fc.double({ min: 1.5, max: 3, noNaN: true }),
+        (l, g) => {
+          expect(linearToGamma(l, g)).toBe(0)
+        },
+      ),
     )
   })
 
