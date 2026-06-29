@@ -12,8 +12,16 @@
 // Encoded chunks from both tracks are buffered and handed to the muxer in
 // timestamp order, which keeps A/V correctly interleaved for both containers.
 
-import { ArrayBufferTarget as Mp4Target, Muxer as Mp4Muxer } from 'mp4-muxer'
-import { ArrayBufferTarget as WebmTarget, Muxer as WebmMuxer } from 'webm-muxer'
+import {
+  ArrayBufferTarget as Mp4Target,
+  FileSystemWritableFileStreamTarget as Mp4StreamTarget,
+  Muxer as Mp4Muxer,
+} from 'mp4-muxer'
+import {
+  ArrayBufferTarget as WebmTarget,
+  FileSystemWritableFileStreamTarget as WebmStreamTarget,
+  Muxer as WebmMuxer,
+} from 'webm-muxer'
 import type { Engine } from '@grade/engine'
 
 export type ExportFormat = 'mp4' | 'webm'
@@ -30,12 +38,20 @@ export interface ExportOptions {
   end?: number
   /** Base name for the downloaded file (extension is added per format). */
   name?: string
+  /**
+   * When set, the muxer streams the finished file straight to disk through this
+   * writable instead of assembling the whole output in memory. The export owns
+   * the stream's lifecycle: it closes it on success and aborts it on failure.
+   * In that case `ExportResult.blob` is null (nothing left to save).
+   */
+  writable?: FileSystemWritableFileStream
   signal?: AbortSignal
   onProgress?: (done: number, total: number) => void
 }
 
 export interface ExportResult {
-  blob: Blob
+  /** The encoded file, or null when it was streamed to `opts.writable`. */
+  blob: Blob | null
   filename: string
   width: number
   height: number
@@ -51,6 +67,11 @@ const AUDIO_SAMPLE_RATE = 48_000 // AAC and Opus both accept this cleanly
 /** WebCodecs won't be present in non-WebGPU contexts; gate the UI on this. */
 export function isExportSupported(): boolean {
   return typeof VideoEncoder !== 'undefined' && typeof VideoFrame !== 'undefined'
+}
+
+/** Suggested output filename for a clip name + format (extension included). */
+export function exportFilename(format: ExportFormat, name?: string): string {
+  return `${sanitizeName(name) || 'grade-export'}.${format}`
 }
 
 /** A muxer chunk awaiting ordered insertion. */
@@ -90,7 +111,15 @@ export async function exportGradedVideo(
   // failure (no track, unsupported codec) degrades to a video-only export.
   const audio = opts.audio === false ? null : await prepareAudio(opts.format, video, start, end)
 
-  const muxer = createMuxer(opts.format, muxerCodec, width, height, fps, audio?.muxer)
+  const muxer = createMuxer(
+    opts.format,
+    muxerCodec,
+    width,
+    height,
+    fps,
+    audio?.muxer,
+    opts.writable,
+  )
 
   // Buffer every encoded chunk, then mux in timestamp order at the end.
   const pending: PendingChunk[] = []
@@ -185,12 +214,18 @@ export async function exportGradedVideo(
   for (const p of pending) p.add()
   const buffer = muxer.finalize()
 
-  const mime = opts.format === 'mp4' ? 'video/mp4' : 'video/webm'
-  const blob = new Blob([buffer], { type: mime })
-  const base = sanitizeName(opts.name) || 'grade-export'
+  // Streaming target: the bytes are already on disk through `opts.writable`, so
+  // just flush and close it. In-memory target: hand the buffer back as a Blob.
+  let blob: Blob | null = null
+  if (opts.writable) {
+    await opts.writable.close()
+  } else {
+    const mime = opts.format === 'mp4' ? 'video/mp4' : 'video/webm'
+    blob = new Blob([buffer as ArrayBuffer], { type: mime })
+  }
   return {
     blob,
-    filename: `${base}.${opts.format}`,
+    filename: exportFilename(opts.format, opts.name),
     width,
     height,
     frames: totalFrames,
@@ -377,7 +412,9 @@ function encodeAudio(encoder: AudioEncoder, buffer: AudioBuffer): void {
 interface MuxerHandle {
   addVideo: (chunk: EncodedVideoChunk, meta?: EncodedVideoChunkMetadata) => void
   addAudio: (chunk: EncodedAudioChunk, meta?: EncodedAudioChunkMetadata) => void
-  finalize: () => ArrayBuffer
+  /** Returns the assembled buffer for an in-memory target, or null when the
+   *  output was streamed to a writable (nothing left to hand back). */
+  finalize: () => ArrayBuffer | null
 }
 
 function createMuxer(
@@ -387,9 +424,12 @@ function createMuxer(
   height: number,
   frameRate: number,
   audio: PreparedAudio['muxer'] | undefined,
+  writable: FileSystemWritableFileStream | undefined,
 ): MuxerHandle {
   if (format === 'mp4') {
-    const target = new Mp4Target()
+    // Streaming to disk writes the moov atom last (`fastStart: false`); the
+    // in-memory path keeps `fastStart: 'in-memory'` for web-friendly faststart.
+    const target = writable ? new Mp4StreamTarget(writable) : new Mp4Target()
     const muxer = new Mp4Muxer({
       target,
       video: { codec: videoCodec as 'avc' | 'hevc' | 'vp9' | 'av1', width, height, frameRate },
@@ -402,16 +442,17 @@ function createMuxer(
             },
           }
         : {}),
-      fastStart: 'in-memory',
+      fastStart: writable ? false : 'in-memory',
     })
     return {
       addVideo: (c, m) => muxer.addVideoChunk(c, m),
       addAudio: (c, m) => muxer.addAudioChunk(c, m),
-      finalize: () => (muxer.finalize(), target.buffer),
+      finalize: () => (muxer.finalize(), writable ? null : (target as Mp4Target).buffer),
     }
   }
 
-  const target = new WebmTarget()
+  // WebM streams monotonically when `streaming: true`.
+  const target = writable ? new WebmStreamTarget(writable) : new WebmTarget()
   const muxer = new WebmMuxer({
     target,
     video: { codec: videoCodec, width, height, frameRate },
@@ -424,11 +465,12 @@ function createMuxer(
           },
         }
       : {}),
+    ...(writable ? { streaming: true } : {}),
   })
   return {
     addVideo: (c, m) => muxer.addVideoChunk(c, m),
     addAudio: (c, m) => muxer.addAudioChunk(c, m),
-    finalize: () => (muxer.finalize(), target.buffer),
+    finalize: () => (muxer.finalize(), writable ? null : (target as WebmTarget).buffer),
   }
 }
 

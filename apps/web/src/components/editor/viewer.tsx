@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Camera, Upload } from 'lucide-react'
 import { toast } from 'sonner'
+import { putClipHandle } from '../../editor/clip-handles'
 import { detectSourceFps } from '../../editor/detect-fps'
+import { pickOpenFile } from '../../editor/save-file'
 import { useEngine } from '../../editor/use-engine'
 import { useEditor } from '../../editor/store'
 import { Button } from '../ui/button'
 import { StillsGallery } from './stills-gallery'
 import { Transport } from './transport'
+
+/** Concrete MIME types so the native open dialog accepts common video files. */
+const CLIP_ACCEPT = {
+  description: 'Video clip',
+  accept: {
+    'video/mp4': ['.mp4', '.m4v'],
+    'video/quicktime': ['.mov'],
+    'video/webm': ['.webm'],
+    'video/x-matroska': ['.mkv'],
+  },
+}
 
 /** Seconds → m:ss.ss, for a still's capture-time label. */
 function formatTime(t: number): string {
@@ -46,7 +59,6 @@ async function grabStill(
 export function Viewer() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
   const [video, setVideo] = useState<HTMLVideoElement | null>(null)
   const [clipName, setClipName] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
@@ -56,6 +68,8 @@ export function Viewer() {
   const registerCanvas = useEditor((s) => s.setCanvas)
   const registerClipName = useEditor((s) => s.setClipName)
   const registerClipFps = useEditor((s) => s.setClipFps)
+  const pendingClip = useEditor((s) => s.pendingClip)
+  const setPendingClip = useEditor((s) => s.setPendingClip)
   const addStill = useEditor((s) => s.addStill)
   const hoveredStillId = useEditor((s) => s.hoveredStillId)
   const stills = useEditor((s) => s.stills)
@@ -124,11 +138,23 @@ export function Viewer() {
     [ensureVideo, registerVideo, registerClipName, registerClipFps],
   )
 
-  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) loadFile(file)
-    e.target.value = '' // allow re-picking the same file
-  }
+  // Open via the file picker; when a real handle comes back, remember it so a
+  // project can re-open this footage in a later session.
+  const openClip = useCallback(async () => {
+    const picked = await pickOpenFile(CLIP_ACCEPT)
+    if (!picked) return
+    loadFile(picked.file)
+    if (picked.handle && picked.file.type.startsWith('video/')) {
+      void putClipHandle(picked.file.name, picked.handle)
+    }
+  }, [loadFile])
+
+  // Load footage requested from elsewhere (e.g. a project reopening its clip).
+  useEffect(() => {
+    if (!pendingClip) return
+    loadFile(pendingClip)
+    setPendingClip(null)
+  }, [pendingClip, loadFile, setPendingClip])
 
   const onDragEnter = (e: React.DragEvent) => {
     if (!Array.from(e.dataTransfer.types).includes('Files')) return
@@ -182,12 +208,7 @@ export function Viewer() {
         <div className="flex items-center gap-2">
           {clipName ? (
             <>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => fileRef.current?.click()}
-                className="gap-1.5"
-              >
+              <Button size="sm" variant="ghost" onClick={() => void openClip()} className="gap-1.5">
                 <Upload className="size-4" /> Replace
               </Button>
               <span className="truncate text-xs text-muted-foreground">{clipName}</span>
@@ -201,7 +222,6 @@ export function Viewer() {
           message={engine.message}
           {...(engine.adapter !== undefined ? { adapter: engine.adapter } : {})}
         />
-        <input ref={fileRef} type="file" accept="video/*" className="hidden" onChange={onPick} />
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -248,7 +268,7 @@ export function Viewer() {
           {!video && !dragging && (
             <button
               type="button"
-              onClick={() => fileRef.current?.click()}
+              onClick={() => void openClip()}
               className="group absolute inset-3 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border text-center text-sm text-muted-foreground transition-colors hover:border-primary/60 hover:bg-primary/5 hover:text-foreground"
             >
               <span className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground shadow-sm transition-colors group-hover:bg-secondary/80">

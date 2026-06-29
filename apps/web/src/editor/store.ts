@@ -161,6 +161,9 @@ interface EditorState {
   engine: Engine | null
   clipName: string | null
   clipFps: number | null
+  /** A clip the Viewer should load on its next render (e.g. a project's footage
+   *  re-opened from a saved file handle). Cleared once the Viewer consumes it. */
+  pendingClip: File | null
 
   onNodesChange: (changes: NodeChange[]) => void
   onEdgesChange: (changes: EdgeChange[]) => void
@@ -190,6 +193,8 @@ interface EditorState {
   setEngine: (engine: Engine | null) => void
   setClipName: (name: string | null) => void
   setClipFps: (fps: number | null) => void
+  /** Request that the Viewer load this clip (or null to clear a consumed request). */
+  setPendingClip: (file: File | null) => void
   togglePlay: () => void
 
   // Undo / redo over the document (nodes, edges, selection).
@@ -200,7 +205,9 @@ interface EditorState {
 
   // Reusable graph templates (structure only, no positions).
   getTemplate: () => GraphTemplate
-  applyTemplate: (t: GraphTemplate) => void
+  /** Rebuild the graph from a template. Pass `positions` (aligned to
+   *  `t.nodes`) to restore exact placement instead of the synthetic row. */
+  applyTemplate: (t: GraphTemplate, positions?: { x: number; y: number }[]) => void
 
   // Captured reference stills (session-scoped) + the one hovered for preview.
   stills: Still[]
@@ -255,6 +262,7 @@ export const useEditor = create<EditorState>((set, get) => {
     engine: null,
     clipName: null,
     clipFps: null,
+    pendingClip: null,
     past: [],
     future: [],
     stills: [],
@@ -446,6 +454,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setCanvas: (canvas) => set({ canvas }),
     setEngine: (engine) => set({ engine }),
     setClipName: (clipName) => set({ clipName }),
+    setPendingClip: (pendingClip) => set({ pendingClip }),
     setClipFps: (clipFps) => set({ clipFps }),
 
     togglePlay: () => {
@@ -499,9 +508,10 @@ export const useEditor = create<EditorState>((set, get) => {
       }
     },
 
-    // Rebuild the graph from a template — fresh ids, auto-laid-out in a row
-    // (positions aren't part of a template, so the exact placement is synthetic).
-    applyTemplate: (t) => {
+    // Rebuild the graph from a template — fresh ids. Without `positions` the
+    // nodes are auto-laid-out in a row; with them (a project load) each node
+    // keeps its saved placement.
+    applyTemplate: (t, positions) => {
       commit()
       set(() => {
         const ids: string[] = []
@@ -517,7 +527,7 @@ export const useEditor = create<EditorState>((set, get) => {
           return {
             id,
             type: 'grade',
-            position: { x: i * 240, y: 120 },
+            position: positions?.[i] ?? { x: i * 240, y: 120 },
             deletable: tn.role === 'effect',
             data: {
               role: tn.role,
