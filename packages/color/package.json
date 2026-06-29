@@ -7,6 +7,9 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.5"
   }
 }

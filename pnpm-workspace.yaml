@@ -1,0 +1,9 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# Packages allowed to run install/build lifecycle scripts (pnpm blocks these by
+# default). esbuild and lightningcss compile native binaries on install.
+onlyBuiltDependencies:
+  - esbuild
+  - lightningcss

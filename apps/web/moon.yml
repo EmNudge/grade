@@ -5,12 +5,12 @@ layer: 'application'
 
 tasks:
   dev:
-    command: 'bun run dev'
+    command: 'pnpm run dev'
     options:
       runInCI: false # dev server — skipped in CI, never cached
 
   build:
-    command: 'bun run build'
+    command: 'pnpm run build'
     inputs:
       - 'src/**/*'
       - 'public/**/*'
@@ -21,12 +21,12 @@ tasks:
       - 'dist'
 
   test:
-    command: 'bun run test'
+    command: 'pnpm run test'
     inputs:
       - 'src/**/*'
       - 'tsconfig.json'
 
   deploy:
-    command: 'bun run deploy'
+    command: 'pnpm run deploy'
     deps:
       - '~:build'

@@ -44,8 +44,8 @@ bash <(curl -fsSL https://moonrepo.dev/install/proto.sh)
 From the repo root:
 
 ```sh
-proto use      # installs bun + moon at the versions pinned in .prototools
-bun install
+proto use      # installs node + pnpm + moon at the versions pinned in .prototools
+pnpm install
 moon run web:dev   # http://localhost:5173
 ```
 

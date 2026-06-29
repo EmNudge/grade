@@ -7,9 +7,12 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "vitest run"
   },
   "dependencies": {
     "@grade/color": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.5"
   }
 }

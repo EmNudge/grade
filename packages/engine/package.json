@@ -7,13 +7,15 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "vitest run"
   },
   "dependencies": {
     "@grade/color": "workspace:*",
     "@grade/nodes": "workspace:*"
   },
   "devDependencies": {
-    "@webgpu/types": "^0.1.60"
+    "@types/node": "^22.10.2",
+    "@webgpu/types": "^0.1.60",
+    "vitest": "^4.1.5"
   }
 }
