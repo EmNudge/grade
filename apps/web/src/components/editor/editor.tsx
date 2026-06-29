@@ -1,6 +1,8 @@
+import { useEffect, useRef } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
-import { Redo2, Undo2 } from 'lucide-react'
+import { ChevronDown, Redo2, Undo2 } from 'lucide-react'
 import { useEditor } from '../../editor/store'
+import { useProjectActions } from '../../editor/use-project-actions'
 import { useShortcuts } from '../../editor/use-shortcuts'
 import { CommandPalette } from './command-palette'
 import { ExportDialog } from './export-dialog'
@@ -11,6 +13,14 @@ import { Scopes } from './scopes'
 import { TemplatesMenu } from './templates-menu'
 import { Viewer } from './viewer'
 import { Button } from '../ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '../ui/resizable'
 import { Toaster } from '../ui/sonner'
 
@@ -27,45 +37,45 @@ export function Editor() {
   const redo = useEditor((s) => s.redo)
   const canUndo = useEditor((s) => s.past.length > 0)
   const canRedo = useEditor((s) => s.future.length > 0)
+  const { restoreLast } = useProjectActions()
+
+  // On startup, offer to reopen the most recently used project. Lives here (an
+  // always-mounted shell) rather than in the Project menu, which mounts lazily.
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    if (restoredRef.current) return
+    restoredRef.current = true
+    void restoreLast()
+  }, [restoreLast])
+
   return (
     <ReactFlowProvider>
       <CommandPalette />
       <div className="flex h-dvh flex-col bg-background text-foreground">
         <header className="flex items-center gap-2 border-b border-border px-4 py-2">
-          <span className="size-3 rounded-sm bg-primary" />
-          <span className="text-sm font-semibold tracking-tight">Grade</span>
-          <span className="text-xs text-muted-foreground">node-based color</span>
-          <div className="ml-3 flex items-center gap-1">
-            <Button
-              size="icon"
-              variant="ghost"
-              className="size-7"
-              disabled={!canUndo}
-              onClick={undo}
-              title="Undo (⌘Z)"
-              aria-label="Undo"
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2" />}
+              title="Grade menu"
             >
-              <Undo2 className="size-4" />
-            </Button>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="size-7"
-              disabled={!canRedo}
-              onClick={redo}
-              title="Redo (⌘⇧Z)"
-              aria-label="Redo"
-            >
-              <Redo2 className="size-4" />
-            </Button>
-          </div>
-          <div className="ml-1 flex items-center gap-1">
-            <ProjectMenu />
-            <TemplatesMenu />
-          </div>
-          <span className="ml-auto hidden text-[11px] text-muted-foreground md:inline">
-            Space play · ⌘K palette · ⌘Z undo · ⌥S/⇧S add · ⌘D bypass · ⌫ delete
-          </span>
+              <span className="size-3 rounded-sm bg-primary" />
+              <span className="text-sm font-semibold tracking-tight">Grade</span>
+              <ChevronDown className="size-3.5 text-muted-foreground" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-48">
+              <DropdownMenuItem disabled={!canUndo} onClick={undo}>
+                <Undo2 className="mr-2 size-3.5" /> Undo
+                <DropdownMenuShortcut>⌘Z</DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={!canRedo} onClick={redo}>
+                <Redo2 className="mr-2 size-3.5" /> Redo
+                <DropdownMenuShortcut>⌘⇧Z</DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <ProjectMenu />
+              <TemplatesMenu />
+            </DropdownMenuContent>
+          </DropdownMenu>
           <div className="ml-auto md:ml-3">
             <ExportDialog />
           </div>

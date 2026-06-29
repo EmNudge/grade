@@ -5,6 +5,13 @@ import { cn } from '../../lib/utils'
 
 // Must match CURVE_MAX in @grade/nodes builtin.ts.
 const MAX = 5
+
+// viewBox is 2:1 (wide) so there's room to place points horizontally. It MUST
+// match the element's CSS aspect ratio: with preserveAspectRatio="none" the box
+// is scaled to fill, and only an equal x/y scale keeps the point handles round.
+// x spans 0..VBW, y spans 0..VBH; normalised point coords (0..1) map onto these.
+const VBW = 200
+const VBH = 100
 const CHANNELS = [
   { id: 'm', label: 'Y', color: '#e5e5e5' },
   { id: 'r', label: 'R', color: '#ff5a5a' },
@@ -149,12 +156,12 @@ export function CurveEditor({
     }
   }, [engine, histogramSource])
 
-  // Filled area under the (normalised) bins, in the 0..100 viewBox; bottom-anchored.
+  // Filled area under the (normalised) bins, in the viewBox; bottom-anchored.
   const histPoints =
     hist &&
-    `0,100 ${hist
-      .map((v, i) => `${((i / 255) * 100).toFixed(2)},${(100 - v * 90).toFixed(2)}`)
-      .join(' ')} 100,100`
+    `0,${VBH} ${hist
+      .map((v, i) => `${((i / 255) * VBW).toFixed(2)},${(VBH - v * (VBH * 0.9)).toFixed(2)}`)
+      .join(' ')} ${VBW},${VBH}`
 
   const count = Math.round(num(values[`crv${ch}_n`], 2))
   const pts: Pt[] = Array.from({ length: count }, (_, i) => ({
@@ -223,7 +230,7 @@ export function CurveEditor({
   // Sample the (possibly splined) curve for the polyline.
   const line = Array.from({ length: 65 }, (_, k) => {
     const x = k / 64
-    return `${x * 100},${(1 - evalCurve(x, pts, smooth)) * 100}`
+    return `${(x * VBW).toFixed(2)},${((1 - evalCurve(x, pts, smooth)) * VBH).toFixed(2)}`
   }).join(' ')
 
   return (
@@ -270,12 +277,15 @@ export function CurveEditor({
 
       <svg
         ref={svgRef}
-        viewBox="0 0 100 100"
+        viewBox={`0 0 ${VBW} ${VBH}`}
         preserveAspectRatio="none"
-        className="aspect-[4/3] w-full max-w-[260px] touch-none rounded-md border border-border bg-[#0d0d0d]"
+        className="aspect-[2/1] w-full max-w-[400px] touch-none rounded-md border border-border bg-[#0d0d0d]"
         onPointerDown={(e) => {
-          // Click on empty graph -> add a point and immediately start dragging it.
-          if (e.button !== 0 || e.target !== svgRef.current || count >= MAX) return
+          // Grabbing a handle stops propagation (see the circles below), so any
+          // pointerdown that reaches the svg is on empty space: add a point and
+          // immediately start dragging it. (Don't gate on e.target — clicks that
+          // land on the grid/curve/histogram should add too, not be rejected.)
+          if (e.button !== 0 || count >= MAX) return
           const p = fromEvent(e.clientX, e.clientY)
           const nx = round(p.x)
           dragIndex.current = pts.filter((q) => q.x < nx).length
@@ -290,28 +300,46 @@ export function CurveEditor({
           svgRef.current?.releasePointerCapture(e.pointerId)
         }}
       >
+        {/* Decorative layers ignore pointer events so the draggable handles
+            below are the only interactive children; clicks anywhere else fall
+            through to the svg's onPointerDown and add a point. */}
         {histPoints && (
-          <polygon points={histPoints} fill={color} fillOpacity={0.16} stroke="none" />
+          <polygon
+            points={histPoints}
+            fill={color}
+            fillOpacity={0.16}
+            stroke="none"
+            pointerEvents="none"
+          />
         )}
-        {[25, 50, 75].map((g) => (
-          <g key={g} stroke="rgba(255,255,255,0.07)" strokeWidth={0.5}>
-            <line x1={g} y1={0} x2={g} y2={100} />
-            <line x1={0} y1={g} x2={100} y2={g} />
+        {[0.25, 0.5, 0.75].map((g) => (
+          <g key={g} stroke="rgba(255,255,255,0.07)" strokeWidth={0.5} pointerEvents="none">
+            <line x1={g * VBW} y1={0} x2={g * VBW} y2={VBH} />
+            <line x1={0} y1={g * VBH} x2={VBW} y2={g * VBH} />
           </g>
         ))}
-        <line x1={0} y1={100} x2={100} y2={0} stroke="rgba(255,255,255,0.12)" strokeWidth={0.5} />
+        <line
+          x1={0}
+          y1={VBH}
+          x2={VBW}
+          y2={0}
+          stroke="rgba(255,255,255,0.12)"
+          strokeWidth={0.5}
+          pointerEvents="none"
+        />
         <polyline
           points={line}
           fill="none"
           stroke={color}
           strokeWidth={1.4}
           vectorEffect="non-scaling-stroke"
+          pointerEvents="none"
         />
         {pts.map((p, i) => (
           <circle
             key={`${p.x}-${p.y}`}
-            cx={p.x * 100}
-            cy={(1 - p.y) * 100}
+            cx={p.x * VBW}
+            cy={(1 - p.y) * VBH}
             r={2.6}
             fill={color}
             stroke="#000"
