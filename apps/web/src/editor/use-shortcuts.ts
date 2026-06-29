@@ -28,6 +28,7 @@ function isEditable(el: EventTarget | null): boolean {
 /**
  * Global editor keyboard shortcuts (DaVinci Resolve color-page muscle memory):
  *   ⌘/Ctrl+K  command palette
+ *   ⌘/Ctrl+Z  undo  ·  ⌘⇧Z / Ctrl+Y  redo
  *   Alt+S     add serial node after the current node
  *   Shift+S   add serial node before the current node
  *   Delete/Backspace  delete the selected node
@@ -39,6 +40,8 @@ export function useShortcuts() {
   const setCommandOpen = useEditor((s) => s.setCommandOpen)
   const togglePlay = useEditor((s) => s.togglePlay)
   const toggleNodeEnabled = useEditor((s) => s.toggleNodeEnabled)
+  const undo = useEditor((s) => s.undo)
+  const redo = useEditor((s) => s.redo)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -57,8 +60,22 @@ export function useShortcuts() {
         return
       }
 
-      // Everything below is suppressed while typing or while the palette is open.
+      // Everything below is suppressed while typing or while the palette is open,
+      // so text fields keep their native undo/redo and shortcuts.
       if (isEditable(e.target) || useEditor.getState().commandOpen) return
+
+      // ⌘Z / Ctrl+Z — undo;  ⌘⇧Z / Ctrl+Y — redo.
+      if ((e.metaKey || e.ctrlKey) && e.code === 'KeyZ') {
+        e.preventDefault()
+        if (e.shiftKey) redo()
+        else undo()
+        return
+      }
+      if ((e.metaKey || e.ctrlKey) && e.code === 'KeyY') {
+        e.preventDefault()
+        redo()
+        return
+      }
 
       // Space — play/pause the clip (only intercept when a clip is loaded).
       // stopPropagation so a focused widget (e.g. the timeline slider thumb)
@@ -97,5 +114,7 @@ export function useShortcuts() {
     setCommandOpen,
     togglePlay,
     toggleNodeEnabled,
+    undo,
+    redo,
   ])
 }
