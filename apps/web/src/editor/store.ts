@@ -16,12 +16,22 @@ import { registry } from './registry'
 
 export type NodeValues = Record<string, number | string | boolean>
 
+/** A loaded 3D LUT attached to a `lut` FX (out-of-band — not a scalar param). */
+export interface LoadedLut {
+  /** Display name (the file name, sans extension, or the LUT's TITLE). */
+  name: string
+  size: number
+  data: Float32Array
+}
+
 /** One effect in a node's FX stack. `base` marks the non-removable corrector. */
 export interface FxInstance {
   id: string
   type: string
   values: NodeValues
   base?: boolean
+  /** For `lut` FX: the loaded lookup table, pushed to the engine out-of-band. */
+  lut?: LoadedLut
 }
 
 export interface GradeNodeData {
@@ -127,6 +137,7 @@ interface EditorState {
   activeFxId: string | null
   setActiveFx: (fxId: string) => void
   updateFxValues: (nodeId: string, fxId: string, patch: NodeValues) => void
+  setFxLut: (nodeId: string, fxId: string, lut: LoadedLut | null) => void
   addFx: (nodeId: string, type: string) => void
   removeFx: (nodeId: string, fxId: string) => void
   setCommandOpen: (open: boolean) => void
@@ -256,6 +267,22 @@ export const useEditor = create<EditorState>((set, get) => {
           fx: n.data.fx.map((f) =>
             f.id === fid ? { ...f, values: { ...f.values, ...patch } } : f,
           ),
+        },
+      })),
+
+    setFxLut: (nodeId, fid, lut) =>
+      mapNode(nodeId, (n) => ({
+        ...n,
+        data: {
+          ...n.data,
+          fx: n.data.fx.map((f) => {
+            if (f.id !== fid) return f
+            if (!lut) {
+              const { lut: _removed, ...rest } = f
+              return rest
+            }
+            return { ...f, lut }
+          }),
         },
       })),
 

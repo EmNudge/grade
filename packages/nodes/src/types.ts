@@ -52,6 +52,13 @@ export interface NodeDef {
    * 'effect' is one compute pass. 'output' marks the graph sink (no-op pass).
    */
   role: NodeRole
+  /**
+   * When true this node samples a per-instance 3D LUT. The engine binds the
+   * uploaded LUT texture (set via `Engine.setNodeLut`) and the compiler exposes
+   * a `grade_apply_lut(vec3<f32>) -> vec3<f32>` helper to the kernel body. An
+   * identity LUT stands in until one is loaded.
+   */
+  lut?: boolean
   params: ReadonlyArray<ParamDef>
   /** Required for 'effect' nodes; ignored for input/output. */
   kernel?: KernelSpec

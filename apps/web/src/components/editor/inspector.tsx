@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { parseCubeLut } from '@grade/color'
 import type { NodeDef, ParamDef } from '@grade/nodes'
-import { Plus, X } from 'lucide-react'
+import { Plus, Sparkles, Upload, X } from 'lucide-react'
+import { toast } from 'sonner'
+import { type BuiltinLut, BUILTIN_LUTS, loadBuiltinLut } from '../../editor/luts'
 import { registry } from '../../editor/registry'
-import { type FxInstance, type NodeValues, useEditor } from '../../editor/store'
+import { type FxInstance, type LoadedLut, type NodeValues, useEditor } from '../../editor/store'
 import { ChromaWarp } from './chroma-warp'
 import { ColorWheels } from './color-wheels'
 import { CurveEditor } from './curve-editor'
@@ -33,6 +36,7 @@ function fxTabLabel(extra: FxInstance[]): string {
 export function Inspector() {
   const node = useEditor((s) => s.nodes.find((n) => n.id === s.selectedId))
   const updateFxValues = useEditor((s) => s.updateFxValues)
+  const setFxLut = useEditor((s) => s.setFxLut)
   const addFx = useEditor((s) => s.addFx)
   const removeFx = useEditor((s) => s.removeFx)
   const [tab, setTab] = useState<'base' | 'fx'>('base')
@@ -106,6 +110,7 @@ export function Inspector() {
               key={fx.id}
               fx={fx}
               onChange={(patch) => updateFxValues(node.id, fx.id, patch)}
+              onLut={(lut) => setFxLut(node.id, fx.id, lut)}
               onRemove={() => removeFx(node.id, fx.id)}
             />
           ))}
@@ -118,10 +123,12 @@ export function Inspector() {
 function FxPanel({
   fx,
   onChange,
+  onLut,
   onRemove,
 }: {
   fx: FxInstance
   onChange: (patch: NodeValues) => void
+  onLut?: (lut: LoadedLut | null) => void
   onRemove?: () => void
 }) {
   const def = registry.get(fx.type)
@@ -169,7 +176,110 @@ function FxPanel({
           </button>
         )}
       </div>
+      {def.lut && <LutLoader lut={fx.lut} onLut={onLut} />}
       <FxParams def={def} values={fx.values} onChange={onChange} />
+    </div>
+  )
+}
+
+/** Load / clear a `.cube` 3D LUT for a LUT FX — from a built-in preset or a file. */
+function LutLoader({
+  lut,
+  onLut,
+}: {
+  lut?: LoadedLut | undefined
+  onLut?: ((lut: LoadedLut | null) => void) | undefined
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+
+  async function onFile(file: File) {
+    try {
+      const text = await file.text()
+      const parsed = parseCubeLut(text)
+      const name = parsed.title?.trim() || file.name.replace(/\.cube$/i, '')
+      onLut?.({ name, size: parsed.size, data: parsed.data })
+      toast.success(`Loaded LUT "${name}"`, { description: `${parsed.size}³ grid` })
+    } catch (err) {
+      toast.error('Could not load LUT', {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  async function onPreset(preset: BuiltinLut) {
+    setBusy(true)
+    try {
+      const loaded = await loadBuiltinLut(preset)
+      onLut?.(loaded)
+      toast.success(`Loaded LUT "${loaded.name}"`, { description: `${loaded.size}³ grid` })
+    } catch (err) {
+      toast.error('Could not load LUT', {
+        description: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 border-b border-border p-3">
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".cube"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          if (file) void onFile(file)
+          e.target.value = '' // allow re-selecting the same file
+        }}
+      />
+      <div className="flex items-center gap-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button size="sm" variant="secondary" className="h-7 gap-1.5" disabled={busy} />
+            }
+          >
+            <Sparkles className="size-3.5" /> Presets
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuGroup>
+              {BUILTIN_LUTS.map((preset) => (
+                <DropdownMenuItem key={preset.id} onClick={() => void onPreset(preset)}>
+                  {preset.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="h-7 gap-1.5"
+          onClick={() => inputRef.current?.click()}
+        >
+          <Upload className="size-3.5" /> {lut ? 'Replace' : 'Load .cube'}
+        </Button>
+        {lut && (
+          <button
+            type="button"
+            onClick={() => onLut?.(null)}
+            className="text-muted-foreground transition-colors hover:text-destructive"
+            title="Clear LUT"
+          >
+            <X className="size-3.5" />
+          </button>
+        )}
+      </div>
+      <p className="truncate text-[11px] text-muted-foreground" title={lut?.name}>
+        {busy
+          ? 'Loading LUT…'
+          : lut
+            ? `${lut.name} · ${lut.size}³`
+            : 'No LUT — pick a preset or load a .cube file.'}
+      </p>
     </div>
   )
 }

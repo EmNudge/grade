@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { Engine } from '@grade/engine'
 import { useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
 
@@ -10,27 +11,66 @@ const MODES: { id: ScopeMode; label: string }[] = [
   { id: 'vectorscope', label: 'Vectorscope' },
 ]
 
-// Downsampled source resolution we read the viewer canvas into.
+// Downsampled source resolution we analyse the graded frame at.
 const SW = 320
 const SH = 180
 // Scope output resolution.
 const OW = 512
 const OH = 256
+// Cap the (full-res) GPU readback to ~20fps — the eye can't use more than that
+// on a histogram, and the readback re-runs the effect chain.
+const SAMPLE_INTERVAL_MS = 50
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 /**
- * Video scopes — reads the viewer's processed output each frame and draws a
+ * Repack a readback frame into the tightly packed SW×SH RGBA buffer the scope
+ * renderers expect, normalising BGRA → RGBA so the channel order matches
+ * regardless of canvas format. The engine already downsamples to SW×SH on the
+ * GPU, so this is a straight copy + channel swap (and resamples defensively if
+ * the source dimensions ever differ).
+ */
+function downsample(
+  frame: { data: Uint8ClampedArray; format: 'RGBA' | 'BGRA'; width: number; height: number },
+  sw: number,
+  sh: number,
+): Uint8ClampedArray {
+  const { data, format, width, height } = frame
+  const bgra = format === 'BGRA'
+  const out = new Uint8ClampedArray(sw * sh * 4)
+  for (let y = 0; y < sh; y++) {
+    const sy = Math.min(height - 1, ((y / sh) * height) | 0)
+    for (let x = 0; x < sw; x++) {
+      const sx = Math.min(width - 1, ((x / sw) * width) | 0)
+      const si = (sy * width + sx) * 4
+      const oi = (y * sw + x) * 4
+      out[oi] = data[bgra ? si + 2 : si] ?? 0
+      out[oi + 1] = data[si + 1] ?? 0
+      out[oi + 2] = data[bgra ? si : si + 2] ?? 0
+      out[oi + 3] = 255
+    }
+  }
+  return out
+}
+
+/**
+ * Video scopes — reads the engine's graded output each frame and draws a
  * histogram (RGB distribution), a luma waveform (the "oscilloscope"), and a
  * vectorscope (chroma scatter), like Resolve / CapCut.
+ *
+ * The frame is pulled straight off the GPU via the engine's offscreen readback
+ * rather than scraping the presented WebGPU canvas — `drawImage`-ing that
+ * canvas returns black, which is what left the parade flat.
  */
 export function Scopes() {
-  const canvas = useEditor((s) => s.canvas)
+  const engine = useEditor((s) => s.engine)
   const [mode, setMode] = useState<ScopeMode>('waveform')
   const outRef = useRef<HTMLCanvasElement>(null)
-  // Read the live canvas + mode from refs so a single persistent loop always
-  // picks up the latest values — switching modes no longer re-inits the loop,
-  // and the parade can't get stuck blank waiting on a stale closure.
-  const canvasRef = useRef(canvas)
-  canvasRef.current = canvas
+  // Read the live engine + mode from refs so the persistent sample/draw loops
+  // always pick up the latest values without re-initialising — switching modes
+  // no longer re-inits the loop, and the parade can't get stuck blank.
+  const engineRef = useRef<Engine | null>(engine)
+  engineRef.current = engine
   const modeRef = useRef(mode)
   modeRef.current = mode
 
@@ -39,34 +79,55 @@ export function Scopes() {
     if (!out) return undefined
     const octx = out.getContext('2d', { willReadFrequently: true })
     if (!octx) return undefined
-    const sample = document.createElement('canvas')
-    sample.width = SW
-    sample.height = SH
-    const sctx = sample.getContext('2d', { willReadFrequently: true })
-    if (!sctx) return undefined
 
+    // Shared between the readback loop (producer) and the draw loop (consumer):
+    // the latest graded frame, already downsampled to SW×SH RGBA.
+    let latest: Uint8ClampedArray | null = null
+    // Held on an object so cleanup can flip it across the async loop's closure.
+    const live = { current: true }
     let raf = 0
+
     const draw = () => {
       raf = requestAnimationFrame(draw)
-      const c = canvasRef.current
-      if (!c || c.width === 0) {
+      const frame = latest
+      if (!frame) {
         octx.fillStyle = '#0a0a0a'
         octx.fillRect(0, 0, OW, OH)
         return
       }
-      try {
-        sctx.drawImage(c, 0, 0, SW, SH)
-      } catch {
-        return
-      }
-      const { data } = sctx.getImageData(0, 0, SW, SH)
       const m = modeRef.current
-      if (m === 'histogram') drawHistogram(octx, data)
-      else if (m === 'waveform') drawParade(octx, data)
-      else drawVectorscope(octx, data)
+      if (m === 'histogram') drawHistogram(octx, frame)
+      else if (m === 'waveform') drawParade(octx, frame)
+      else drawVectorscope(octx, frame)
     }
     raf = requestAnimationFrame(draw)
-    return () => cancelAnimationFrame(raf)
+
+    // Pull graded frames off the GPU as fast as readback completes, capped to
+    // SAMPLE_INTERVAL_MS. `sampleScopes` returns null until the engine has
+    // rendered a frame, which keeps the scope blank (not stale) before a clip.
+    const pump = async () => {
+      while (live.current) {
+        const eng = engineRef.current
+        if (!eng) {
+          latest = null
+          await sleep(SAMPLE_INTERVAL_MS * 2)
+          continue
+        }
+        try {
+          const frame = await eng.sampleScopes(SW, SH)
+          latest = frame ? downsample(frame, SW, SH) : null
+        } catch {
+          latest = null
+        }
+        await sleep(SAMPLE_INTERVAL_MS)
+      }
+    }
+    void pump()
+
+    return () => {
+      live.current = false
+      cancelAnimationFrame(raf)
+    }
   }, [])
 
   return (

@@ -8,6 +8,23 @@ function alignBytesPerRow(width: number): number {
   return Math.ceil((width * 4) / 256) * 256
 }
 
+/** Identity N³ RGB lattice (red-fastest) — maps every colour to itself. */
+function identityLut(size: number): Float32Array {
+  const out = new Float32Array(size * size * size * 3)
+  let p = 0
+  const d = size - 1
+  for (let b = 0; b < size; b++) {
+    for (let g = 0; g < size; g++) {
+      for (let r = 0; r < size; r++) {
+        out[p++] = r / d
+        out[p++] = g / d
+        out[p++] = b / d
+      }
+    }
+  }
+  return out
+}
+
 export interface EngineInfo {
   adapter: string
   features: string[]
@@ -46,12 +63,30 @@ export class Engine {
   private readbackTex: GPUTexture | undefined = undefined
   private readbackBuf: GPUBuffer | undefined = undefined
 
+  // The live loop's most recent final texture, kept so scopes can reblit it off
+  // the GPU without re-importing the video or re-running the chain (which is
+  // export-only — it mutates shared textures and is unsafe during playback).
+  private lastFinal: GPUTextureView | undefined = undefined
+  // Small readback target + buffer for scopes, sized to the scope's analysis
+  // resolution rather than the full frame.
+  private scopeTex: GPUTexture | undefined = undefined
+  private scopeBuf: GPUBuffer | undefined = undefined
+  private scopeW = 0
+  private scopeH = 0
+
   private graph?: Graph
   private passes: RuntimePass[] = []
 
   private bindLayout: GPUBindGroupLayout
+  /** Bind layout for `lut` nodes: the base three bindings plus the 3D LUT. */
+  private lutBindLayout: GPUBindGroupLayout
   private blitPipeline: GPURenderPipeline
   private sampler: GPUSampler
+
+  // Per-node 3D LUT textures (set via setNodeLut), plus an identity LUT that
+  // stands in for any `lut` pass whose table hasn't been loaded yet.
+  private lutTextures = new Map<string, GPUTexture>()
+  private defaultLut: GPUTexture
 
   private raf = 0
   private running = false
@@ -76,17 +111,31 @@ export class Engine {
     this.info = info
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' })
 
-    this.bindLayout = device.createBindGroupLayout({
+    const baseEntries: GPUBindGroupLayoutEntry[] = [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: WORKING_FORMAT },
+      },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ]
+    this.bindLayout = device.createBindGroupLayout({ entries: baseEntries })
+    this.lutBindLayout = device.createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
+        ...baseEntries,
+        // rgba32float is unfilterable; the shader does manual trilinear sampling.
         {
-          binding: 1,
+          binding: 3,
           visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: 'write-only', format: WORKING_FORMAT },
+          texture: { sampleType: 'unfilterable-float', viewDimension: '3d' },
         },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       ],
     })
+
+    // 2³ identity LUT — the unit-cube corners, so an un-loaded LUT pass is a
+    // pass-through.
+    this.defaultLut = this.createLutTexture(2, identityLut(2))
 
     this.blitPipeline = this.createBlitPipeline()
   }
@@ -155,6 +204,21 @@ export class Engine {
     this.rebuildPasses()
   }
 
+  /**
+   * Upload (or clear) the 3D LUT for a `lut` node. `nodeId` is the compiled pass
+   * id (the app keys these `${nodeId}:${fxId}`). Pass `null` to drop back to the
+   * identity LUT. Independent of pipeline rebuilds, so loading a LUT doesn't
+   * recompile shaders.
+   */
+  setNodeLut(nodeId: string, lut: { size: number; data: Float32Array } | null): void {
+    const existing = this.lutTextures.get(nodeId)
+    if (existing) {
+      existing.destroy()
+      this.lutTextures.delete(nodeId)
+    }
+    if (lut) this.lutTextures.set(nodeId, this.createLutTexture(lut.size, lut.data))
+  }
+
   /** Live-update a single node's params without recompiling pipelines. */
   setNodeValues(nodeId: string, values: Record<string, number | string | boolean>) {
     const pass = this.passes.find((p) => p.nodeId === nodeId)
@@ -192,7 +256,73 @@ export class Engine {
     if (!finalView) return false
     this.blit(encoder, this.context.getCurrentTexture().createView(), finalView)
     this.device.queue.submit([encoder.finish()])
+    // Retain the just-rendered output so sampleScopes() can reblit it.
+    this.lastFinal = finalView
     return true
+  }
+
+  /**
+   * Read the most recently rendered frame back off the GPU at the given (small)
+   * resolution, for the video scopes. Safe to call repeatedly *during* live
+   * playback — unlike readFrame(), it doesn't touch the source/working textures,
+   * it just reblits the retained final view into a dedicated readback target.
+   * Returns null until the live loop has rendered at least one frame.
+   */
+  async sampleScopes(
+    width: number,
+    height: number,
+  ): Promise<{
+    data: Uint8ClampedArray
+    format: 'RGBA' | 'BGRA'
+    width: number
+    height: number
+  } | null> {
+    const src = this.lastFinal
+    if (!src || this.width === 0) return null
+    this.ensureScopeTarget(width, height)
+    if (!this.scopeTex || !this.scopeBuf) return null
+
+    const bytesPerRow = alignBytesPerRow(width)
+    const encoder = this.device.createCommandEncoder()
+    // The blit samples with a linear sampler, so writing into a smaller target
+    // downsamples the frame for free.
+    this.blit(encoder, this.scopeTex.createView(), src)
+    encoder.copyTextureToBuffer(
+      { texture: this.scopeTex },
+      { buffer: this.scopeBuf, bytesPerRow, rowsPerImage: height },
+      { width, height },
+    )
+    this.device.queue.submit([encoder.finish()])
+
+    await this.scopeBuf.mapAsync(GPUMapMode.READ)
+    const padded = new Uint8Array(this.scopeBuf.getMappedRange())
+    const rowBytes = width * 4
+    const tight = new Uint8ClampedArray(rowBytes * height)
+    for (let y = 0; y < height; y++) {
+      tight.set(padded.subarray(y * bytesPerRow, y * bytesPerRow + rowBytes), y * rowBytes)
+    }
+    this.scopeBuf.unmap()
+
+    const format = this.canvasFormat.startsWith('bgra') ? 'BGRA' : 'RGBA'
+    return { data: tight, format, width, height }
+  }
+
+  /** Lazily (re)allocate the scope readback target + buffer to the given size. */
+  private ensureScopeTarget(w: number, h: number): void {
+    if (this.scopeTex && this.scopeW === w && this.scopeH === h) return
+    this.scopeTex?.destroy()
+    this.scopeBuf?.destroy()
+    this.scopeW = w
+    this.scopeH = h
+    this.scopeTex = this.device.createTexture({
+      size: { width: w, height: h },
+      format: this.canvasFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    })
+    this.scopeBuf = this.device.createBuffer({
+      size: alignBytesPerRow(w) * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    })
   }
 
   /**
@@ -283,15 +413,20 @@ export class Engine {
       const dstTex = writeToA ? this.workA : this.workB
       const cpass = encoder.beginComputePass()
       cpass.setPipeline(pass.pipeline)
+      const entries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: srcView },
+        { binding: 1, resource: dstTex.createView() },
+        { binding: 2, resource: { buffer: pass.uniform } },
+      ]
+      if (pass.def.lut) {
+        const tex = this.lutTextures.get(pass.nodeId) ?? this.defaultLut
+        entries.push({ binding: 3, resource: tex.createView({ dimension: '3d' }) })
+      }
       cpass.setBindGroup(
         0,
         this.device.createBindGroup({
-          layout: this.bindLayout,
-          entries: [
-            { binding: 0, resource: srcView },
-            { binding: 1, resource: dstTex.createView() },
-            { binding: 2, resource: { buffer: pass.uniform } },
-          ],
+          layout: pass.def.lut ? this.lutBindLayout : this.bindLayout,
+          entries,
         }),
       )
       cpass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8))
@@ -357,12 +492,45 @@ export class Engine {
     this.workB?.destroy()
     this.readbackTex?.destroy()
     this.readbackBuf?.destroy()
+    this.scopeTex?.destroy()
+    this.scopeBuf?.destroy()
     for (const p of this.passes) p.uniform.destroy()
     this.passes = []
+    for (const tex of this.lutTextures.values()) tex.destroy()
+    this.lutTextures.clear()
+    this.defaultLut.destroy()
     this.device.destroy()
   }
 
   // ---- internals ----
+
+  /**
+   * Create an N³ 3D LUT texture from a flat RGB lattice (red-fastest, the
+   * `.cube` order). Stored as `rgba32float` (a=1) and sampled with `textureLoad`,
+   * so no filterable-float feature is needed.
+   */
+  private createLutTexture(size: number, rgb: Float32Array): GPUTexture {
+    const tex = this.device.createTexture({
+      size: { width: size, height: size, depthOrArrayLayers: size },
+      dimension: '3d',
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    })
+    const rgba = new Float32Array(size * size * size * 4)
+    for (let i = 0, j = 0; j < rgba.length; i += 3, j += 4) {
+      rgba[j] = rgb[i] ?? 0
+      rgba[j + 1] = rgb[i + 1] ?? 0
+      rgba[j + 2] = rgb[i + 2] ?? 0
+      rgba[j + 3] = 1
+    }
+    this.device.queue.writeTexture(
+      { texture: tex },
+      rgba,
+      { bytesPerRow: size * 16, rowsPerImage: size },
+      { width: size, height: size, depthOrArrayLayers: size },
+    )
+    return tex
+  }
 
   private allocate(w: number, h: number) {
     if (w === this.width && h === this.height && this.sourceTex) return
@@ -376,6 +544,15 @@ export class Engine {
     this.readbackBuf?.destroy()
     this.readbackTex = undefined
     this.readbackBuf = undefined
+    // The retained final view points at textures we're about to destroy, and
+    // the scope target may need a different size; drop both.
+    this.lastFinal = undefined
+    this.scopeTex?.destroy()
+    this.scopeBuf?.destroy()
+    this.scopeTex = undefined
+    this.scopeBuf = undefined
+    this.scopeW = 0
+    this.scopeH = 0
 
     this.sourceTex = this.device.createTexture({
       size: { width: w, height: h },
@@ -407,11 +584,14 @@ export class Engine {
     const pipelineLayout = this.device.createPipelineLayout({
       bindGroupLayouts: [this.bindLayout],
     })
+    const lutPipelineLayout = this.device.createPipelineLayout({
+      bindGroupLayouts: [this.lutBindLayout],
+    })
 
     for (const pass of compiled.passes) {
       const module = this.device.createShaderModule({ code: pass.wgsl })
       const pipeline = this.device.createComputePipeline({
-        layout: pipelineLayout,
+        layout: pass.def.lut ? lutPipelineLayout : pipelineLayout,
         compute: { module, entryPoint: 'main' },
       })
       const uniform = this.device.createBuffer({
@@ -420,6 +600,15 @@ export class Engine {
       })
       this.device.queue.writeBuffer(uniform, 0, pass.paramData)
       this.passes.push({ ...pass, pipeline, uniform })
+    }
+
+    // Drop LUT textures for nodes that no longer exist in the graph.
+    const live = new Set(compiled.passes.map((p) => p.nodeId))
+    for (const [id, tex] of this.lutTextures) {
+      if (!live.has(id)) {
+        tex.destroy()
+        this.lutTextures.delete(id)
+      }
     }
   }
 
