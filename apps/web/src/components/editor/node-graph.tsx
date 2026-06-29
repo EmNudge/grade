@@ -3,6 +3,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  type EdgeMouseHandler,
   type NodeMouseHandler,
   ReactFlow,
   useReactFlow,
@@ -60,6 +61,11 @@ export function NodeGraph() {
     setMenu({ x: e.clientX, y: e.clientY })
   }
 
+  // Clicking a connector removes it (cheap to re-draw by dragging a new one).
+  const onEdgeClick: EdgeMouseHandler = (_, edge) => {
+    onEdgesChange([{ id: edge.id, type: 'remove' }])
+  }
+
   return (
     <div className="relative size-full">
       <ReactFlow
@@ -69,6 +75,7 @@ export function NodeGraph() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onEdgeClick={onEdgeClick}
         onNodeContextMenu={onNodeContextMenu}
         onPaneContextMenu={onPaneContextMenu}
         fitView

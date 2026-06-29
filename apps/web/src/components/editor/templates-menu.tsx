@@ -8,14 +8,12 @@ import {
   saveTemplate,
   type SavedTemplate,
 } from '../../editor/templates'
-import { Button } from '../ui/button'
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
 } from '../ui/dropdown-menu'
 
 /**
@@ -49,44 +47,37 @@ export function TemplatesMenu() {
   }
 
   return (
-    <DropdownMenu onOpenChange={(open) => open && refresh()}>
-      <DropdownMenuTrigger
-        render={<Button size="sm" variant="ghost" className="h-7 gap-1.5" />}
-        title="Graph templates"
-      >
-        <LayoutTemplate className="size-4" /> Templates
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-56">
-        <DropdownMenuGroup>
-          <DropdownMenuItem onClick={onSave}>
-            <Plus className="mr-2 size-3.5" /> Save current graph…
-          </DropdownMenuItem>
-        </DropdownMenuGroup>
+    <DropdownMenuSub onOpenChange={(open) => open && refresh()}>
+      <DropdownMenuSubTrigger>
+        <LayoutTemplate className="mr-2 size-3.5" /> Templates
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="min-w-56">
+        <DropdownMenuItem onClick={onSave}>
+          <Plus className="mr-2 size-3.5" /> Save current graph…
+        </DropdownMenuItem>
         {items.length > 0 && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              {items.map((t) => (
-                <DropdownMenuItem
-                  key={t.id}
-                  onClick={() => onApply(t)}
-                  className="group/item justify-between gap-2"
+            {items.map((t) => (
+              <DropdownMenuItem
+                key={t.id}
+                onClick={() => onApply(t)}
+                className="group/item justify-between gap-2"
+              >
+                <span className="truncate">{t.name}</span>
+                <button
+                  type="button"
+                  onClick={(e) => onDelete(e, t)}
+                  className="text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/item:opacity-100"
+                  aria-label={`Delete template ${t.name}`}
                 >
-                  <span className="truncate">{t.name}</span>
-                  <button
-                    type="button"
-                    onClick={(e) => onDelete(e, t)}
-                    className="text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/item:opacity-100"
-                    aria-label={`Delete template ${t.name}`}
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
+                  <X className="size-3.5" />
+                </button>
+              </DropdownMenuItem>
+            ))}
           </>
         )}
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   )
 }

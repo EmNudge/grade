@@ -61,16 +61,20 @@ export function ExportDialog() {
         setOpen(next)
       }}
     >
-      <Button
-        size="sm"
-        variant="default"
-        className="h-7 gap-1.5"
-        disabled={!hasClip}
-        title={hasClip ? 'Export graded video' : 'Import a clip first'}
-        onClick={() => setOpen(true)}
-      >
-        <Download className="size-4" /> Export
-      </Button>
+      {/* The Button has `disabled:pointer-events-none`, so a native title on it
+          won't show while disabled. Carry the "why" on a wrapper span instead. */}
+      <span className="inline-flex" title={hasClip ? undefined : 'Import a clip first'}>
+        <Button
+          size="sm"
+          variant="default"
+          className="h-7 gap-1.5"
+          disabled={!hasClip}
+          title={hasClip ? 'Export graded video' : undefined}
+          onClick={() => setOpen(true)}
+        >
+          <Download className="size-4" /> Export
+        </Button>
+      </span>
 
       <DialogContent showCloseButton={!busy}>
         <DialogHeader>

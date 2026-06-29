@@ -100,7 +100,8 @@ function Wheel({
   const apply = (clientX: number, clientY: number) => {
     const start = drag.current
     if (!start) return
-    const SENSITIVITY = 0.22
+    // Heavily damped so even a large drag is a small chroma shift — fine control.
+    const SENSITIVITY = 0.12
     const dnx = ((clientX - start.x) / R) * SENSITIVITY
     const dny = (-(clientY - start.y) / R) * SENSITIVITY
     const clamp = (v: number) => Math.max(-rgbRange, Math.min(rgbRange, v))
@@ -148,7 +149,7 @@ function Wheel({
           e.currentTarget.releasePointerCapture(e.pointerId)
         }}
         onDoubleClick={reset}
-        className="relative cursor-crosshair touch-none rounded-full border border-border"
+        className="relative cursor-crosshair touch-none rounded-full"
         style={{
           width: SIZE,
           height: SIZE,
