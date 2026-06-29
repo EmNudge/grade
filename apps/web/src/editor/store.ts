@@ -56,6 +56,19 @@ const nextId = (prefix: string) => `${prefix}-${++nodeCounter}`
 const edgeId = () => `e${++edgeCounter}`
 const fxId = () => `fx${++fxCounter}`
 
+/** Most undo steps the history keeps before dropping the oldest. */
+const HISTORY_LIMIT = 100
+/** Same-keyed edits within this window collapse into a single undo step. */
+const COALESCE_MS = 500
+
+/** The undoable slice of the editor — the document, minus transient runtime state. */
+interface Snapshot {
+  nodes: GradeNode[]
+  edges: Edge[]
+  selectedId: string | null
+  activeFxId: string | null
+}
+
 function makeFx(type: string, base = false): FxInstance {
   return { id: fxId(), type, values: defaultValues(registry.require(type)), base }
 }
@@ -148,6 +161,12 @@ interface EditorState {
   setClipFps: (fps: number | null) => void
   togglePlay: () => void
 
+  // Undo / redo over the document (nodes, edges, selection).
+  past: Snapshot[]
+  future: Snapshot[]
+  undo: () => void
+  redo: () => void
+
   toGraph: () => Graph
   structureKey: () => string
 }
@@ -157,6 +176,31 @@ export const useEditor = create<EditorState>((set, get) => {
 
   const mapNode = (id: string, fn: (n: GradeNode) => GradeNode) =>
     set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? fn(n) : n)) }))
+
+  const snapshot = (s: EditorState): Snapshot => ({
+    nodes: s.nodes,
+    edges: s.edges,
+    selectedId: s.selectedId,
+    activeFxId: s.activeFxId,
+  })
+
+  let coalesceKey: string | null = null
+  let coalesceAt = 0
+
+  /**
+   * Record the current document onto the undo stack *before* the calling
+   * mutation changes it (state is immutable, so we keep references, not clones).
+   * Pass a `key` to fold a burst of like edits — a slider/wheel drag, label
+   * typing, a node drag — into one undo step; omit it for one-shot actions.
+   */
+  const commit = (key?: string) => {
+    const now = performance.now()
+    const coalesce = key != null && key === coalesceKey && now - coalesceAt < COALESCE_MS
+    coalesceKey = key ?? null
+    coalesceAt = now
+    if (coalesce) return
+    set((s) => ({ past: [...s.past, snapshot(s)].slice(-HISTORY_LIMIT), future: [] }))
+  }
 
   return {
     nodes: initial.nodes,
@@ -169,19 +213,35 @@ export const useEditor = create<EditorState>((set, get) => {
     engine: null,
     clipName: null,
     clipFps: null,
+    past: [],
+    future: [],
 
-    onNodesChange: (changes) =>
-      set((s) => ({ nodes: applyNodeChanges(changes, s.nodes) as GradeNode[] })),
-    onEdgesChange: (changes) => set((s) => ({ edges: applyEdgeChanges(changes, s.edges) })),
-    onConnect: (conn) => set((s) => ({ edges: addEdge({ ...conn, id: edgeId() }, s.edges) })),
+    // Drags and removals are undoable (one step per drag); pure selection and
+    // dimension-measurement changes from React Flow are not.
+    onNodesChange: (changes) => {
+      if (changes.some((c) => c.type === 'position' || c.type === 'remove'))
+        commit(changes.every((c) => c.type === 'position') ? 'node-drag' : undefined)
+      set((s) => ({ nodes: applyNodeChanges(changes, s.nodes) as GradeNode[] }))
+    },
+    onEdgesChange: (changes) => {
+      if (changes.some((c) => c.type === 'remove')) commit()
+      set((s) => ({ edges: applyEdgeChanges(changes, s.edges) }))
+    },
+    onConnect: (conn) => {
+      commit()
+      set((s) => ({ edges: addEdge({ ...conn, id: edgeId() }, s.edges) }))
+    },
 
-    addNode: () =>
+    addNode: () => {
+      commit()
       set((s) => {
         const node = createEffectNode({ x: 320, y: 280 + s.nodes.length * 8 })
         return { nodes: [...s.nodes, node], selectedId: node.id }
-      }),
+      })
+    },
 
-    addSerialAfter: () =>
+    addSerialAfter: () => {
+      commit()
       set((s) => {
         const byId = new Map(s.nodes.map((n) => [n.id, n]))
         let anchorId = s.selectedId
@@ -197,9 +257,11 @@ export const useEditor = create<EditorState>((set, get) => {
         if (!anchor) return {}
         if (anchor.data.role === 'output') return insertBefore(s, anchor)
         return insertAfter(s, anchor)
-      }),
+      })
+    },
 
-    addSerialBefore: () =>
+    addSerialBefore: () => {
+      commit()
       set((s) => {
         const byId = new Map(s.nodes.map((n) => [n.id, n]))
         let anchorId = s.selectedId
@@ -208,9 +270,13 @@ export const useEditor = create<EditorState>((set, get) => {
         if (!anchor) return {}
         if (anchor.data.role === 'input') return insertAfter(s, anchor)
         return insertBefore(s, anchor)
-      }),
+      })
+    },
 
-    deleteNode: (id) =>
+    deleteNode: (id) => {
+      const target = get().nodes.find((n) => n.id === id)
+      if (!target || target.deletable === false) return
+      commit()
       set((s) => {
         const node = s.nodes.find((n) => n.id === id)
         if (!node || node.deletable === false) return {}
@@ -226,40 +292,55 @@ export const useEditor = create<EditorState>((set, get) => {
           edges: [...rest, ...bridged],
           selectedId: s.selectedId === id ? firstEffectId(remaining) : s.selectedId,
         }
-      }),
+      })
+    },
 
     deleteSelected: () => {
       const { selectedId, deleteNode } = get()
       if (selectedId) deleteNode(selectedId)
     },
 
-    resetNode: (id) =>
+    resetNode: (id) => {
+      commit()
       mapNode(id, (n) => ({
         ...n,
         data: {
           ...n.data,
           fx: n.data.fx.map((f) => ({ ...f, values: defaultValues(registry.require(f.type)) })),
         },
-      })),
+      }))
+    },
 
-    toggleNodeEnabled: (id) =>
+    toggleNodeEnabled: (id) => {
+      commit()
       mapNode(id, (n) =>
         n.data.role === 'effect' ? { ...n, data: { ...n.data, enabled: !n.data.enabled } } : n,
-      ),
+      )
+    },
 
-    setNodeLabel: (id, label) => mapNode(id, (n) => ({ ...n, data: { ...n.data, label } })),
+    setNodeLabel: (id, label) => {
+      commit(`label:${id}`)
+      mapNode(id, (n) => ({ ...n, data: { ...n.data, label } }))
+    },
 
-    setNodeAccent: (id, accent) => mapNode(id, (n) => ({ ...n, data: { ...n.data, accent } })),
+    setNodeAccent: (id, accent) => {
+      commit()
+      mapNode(id, (n) => ({ ...n, data: { ...n.data, accent } }))
+    },
 
-    addCorrectorAt: (pos) =>
+    addCorrectorAt: (pos) => {
+      commit()
       set((s) => {
         const node = createEffectNode(pos)
         return { nodes: [...s.nodes, node], selectedId: node.id }
-      }),
+      })
+    },
 
     selectNode: (id) => set({ selectedId: id }),
 
-    updateFxValues: (nodeId, fid, patch) =>
+    updateFxValues: (nodeId, fid, patch) => {
+      // Coalesce a continuous drag (slider, wheel, curve) into one undo step.
+      commit(`fx:${nodeId}:${fid}`)
       mapNode(nodeId, (n) => ({
         ...n,
         data: {
@@ -268,9 +349,11 @@ export const useEditor = create<EditorState>((set, get) => {
             f.id === fid ? { ...f, values: { ...f.values, ...patch } } : f,
           ),
         },
-      })),
+      }))
+    },
 
-    setFxLut: (nodeId, fid, lut) =>
+    setFxLut: (nodeId, fid, lut) => {
+      commit()
       mapNode(nodeId, (n) => ({
         ...n,
         data: {
@@ -284,11 +367,13 @@ export const useEditor = create<EditorState>((set, get) => {
             return { ...f, lut }
           }),
         },
-      })),
+      }))
+    },
 
     setActiveFx: (id) => set({ activeFxId: id }),
 
-    addFx: (nodeId, type) =>
+    addFx: (nodeId, type) => {
+      commit()
       set((s) => {
         const fx = makeFx(type)
         return {
@@ -297,9 +382,11 @@ export const useEditor = create<EditorState>((set, get) => {
           ),
           activeFxId: fx.id, // jump to the freshly added FX tab
         }
-      }),
+      })
+    },
 
-    removeFx: (nodeId, fid) =>
+    removeFx: (nodeId, fid) => {
+      commit()
       set((s) => ({
         nodes: s.nodes.map((n) =>
           n.id === nodeId
@@ -307,7 +394,8 @@ export const useEditor = create<EditorState>((set, get) => {
             : n,
         ),
         activeFxId: s.activeFxId === fid ? null : s.activeFxId,
-      })),
+      }))
+    },
 
     setCommandOpen: (open) => set({ commandOpen: open }),
     setVideo: (video) => set({ video }),
@@ -322,6 +410,36 @@ export const useEditor = create<EditorState>((set, get) => {
       if (v.paused) void v.play().catch(() => {})
       else v.pause()
     },
+
+    undo: () =>
+      set((s) => {
+        const prev = s.past[s.past.length - 1]
+        if (!prev) return {}
+        coalesceKey = null // the next edit starts a fresh undo group
+        return {
+          past: s.past.slice(0, -1),
+          future: [snapshot(s), ...s.future].slice(0, HISTORY_LIMIT),
+          nodes: prev.nodes,
+          edges: prev.edges,
+          selectedId: prev.selectedId,
+          activeFxId: prev.activeFxId,
+        }
+      }),
+
+    redo: () =>
+      set((s) => {
+        const next = s.future[0]
+        if (!next) return {}
+        coalesceKey = null
+        return {
+          future: s.future.slice(1),
+          past: [...s.past, snapshot(s)].slice(-HISTORY_LIMIT),
+          nodes: next.nodes,
+          edges: next.edges,
+          selectedId: next.selectedId,
+          activeFxId: next.activeFxId,
+        }
+      }),
 
     toGraph: () => {
       const { nodes, edges } = get()

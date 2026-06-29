@@ -1,4 +1,4 @@
-import { ArrowLeftToLine, ArrowRightToLine, Trash2 } from 'lucide-react'
+import { ArrowLeftToLine, ArrowRightToLine, Redo2, Trash2, Undo2 } from 'lucide-react'
 import { useEditor } from '../../editor/store'
 import {
   Command,
@@ -18,6 +18,10 @@ export function CommandPalette() {
   const addSerialBefore = useEditor((s) => s.addSerialBefore)
   const deleteSelected = useEditor((s) => s.deleteSelected)
   const selectedId = useEditor((s) => s.selectedId)
+  const undo = useEditor((s) => s.undo)
+  const redo = useEditor((s) => s.redo)
+  const canUndo = useEditor((s) => s.past.length > 0)
+  const canRedo = useEditor((s) => s.future.length > 0)
 
   const run = (fn: () => void) => {
     fn()
@@ -30,6 +34,18 @@ export function CommandPalette() {
         <CommandInput placeholder="Run a command…" />
         <CommandList>
           <CommandEmpty>No matches.</CommandEmpty>
+          <CommandGroup heading="Edit">
+            <CommandItem value="undo" disabled={!canUndo} onSelect={() => run(undo)}>
+              <Undo2 />
+              Undo
+              <CommandShortcut>⌘Z</CommandShortcut>
+            </CommandItem>
+            <CommandItem value="redo" disabled={!canRedo} onSelect={() => run(redo)}>
+              <Redo2 />
+              Redo
+              <CommandShortcut>⌘⇧Z</CommandShortcut>
+            </CommandItem>
+          </CommandGroup>
           <CommandGroup heading="Nodes">
             <CommandItem value="add corrector after" onSelect={() => run(() => addSerialAfter())}>
               <ArrowRightToLine />

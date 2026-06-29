@@ -1,4 +1,6 @@
 import { ReactFlowProvider } from '@xyflow/react'
+import { Redo2, Undo2 } from 'lucide-react'
+import { useEditor } from '../../editor/store'
 import { useShortcuts } from '../../editor/use-shortcuts'
 import { CommandPalette } from './command-palette'
 import { ExportDialog } from './export-dialog'
@@ -6,6 +8,7 @@ import { Inspector } from './inspector'
 import { NodeGraph } from './node-graph'
 import { Scopes } from './scopes'
 import { Viewer } from './viewer'
+import { Button } from '../ui/button'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '../ui/resizable'
 import { Toaster } from '../ui/sonner'
 
@@ -18,6 +21,10 @@ import { Toaster } from '../ui/sonner'
  */
 export function Editor() {
   useShortcuts()
+  const undo = useEditor((s) => s.undo)
+  const redo = useEditor((s) => s.redo)
+  const canUndo = useEditor((s) => s.past.length > 0)
+  const canRedo = useEditor((s) => s.future.length > 0)
   return (
     <ReactFlowProvider>
       <CommandPalette />
@@ -26,8 +33,32 @@ export function Editor() {
           <span className="size-3 rounded-sm bg-primary" />
           <span className="text-sm font-semibold tracking-tight">Grade</span>
           <span className="text-xs text-muted-foreground">node-based color</span>
+          <div className="ml-3 flex items-center gap-1">
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-7"
+              disabled={!canUndo}
+              onClick={undo}
+              title="Undo (⌘Z)"
+              aria-label="Undo"
+            >
+              <Undo2 className="size-4" />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-7"
+              disabled={!canRedo}
+              onClick={redo}
+              title="Redo (⌘⇧Z)"
+              aria-label="Redo"
+            >
+              <Redo2 className="size-4" />
+            </Button>
+          </div>
           <span className="ml-auto hidden text-[11px] text-muted-foreground md:inline">
-            Space play · ⌘K palette · ⌥S/⇧S add · ⌘D bypass · ⌫ delete
+            Space play · ⌘K palette · ⌘Z undo · ⌥S/⇧S add · ⌘D bypass · ⌫ delete
           </span>
           <div className="ml-auto md:ml-3">
             <ExportDialog />
