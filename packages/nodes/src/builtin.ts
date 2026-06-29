@@ -211,10 +211,84 @@ function curvePts(channel: string): ParamDef[] {
   return out
 }
 
+/**
+ * Hue-curve control points (DaVinci's Hue vs Hue / Sat / Lum). Same machinery
+ * as the tone curves, but the x-axis is hue and the output is centred at 0.5 =
+ * neutral (no hue shift / ×1 sat / ×1 luma). Flat 0.5 by default, so it's a
+ * no-op until edited.
+ */
+function huePts(channel: string): ParamDef[] {
+  const out: ParamDef[] = [
+    {
+      key: `crv${channel}_n`,
+      label: 'n',
+      group: 'HueCurves',
+      type: 'float',
+      default: 2,
+      min: 2,
+      max: CURVE_MAX,
+      step: 1,
+    },
+  ]
+  for (let i = 0; i < CURVE_MAX; i++) {
+    out.push(
+      {
+        key: `crv${channel}_x${i}`,
+        label: `x${i}`,
+        group: 'HueCurves',
+        type: 'float',
+        default: i === 0 ? 0 : 1,
+        min: 0,
+        max: 1,
+        step: 0.001,
+      },
+      {
+        key: `crv${channel}_y${i}`,
+        label: `y${i}`,
+        group: 'HueCurves',
+        type: 'float',
+        default: 0.5,
+        min: 0,
+        max: 1,
+        step: 0.001,
+      },
+    )
+  }
+  return out
+}
+
 const curveCall = (ch: string, inp: string) =>
   `grade_curveN(${inp}, P.crv${ch}_n, ` +
   `P.crv${ch}_x0, P.crv${ch}_x1, P.crv${ch}_x2, P.crv${ch}_x3, P.crv${ch}_x4, ` +
   `P.crv${ch}_y0, P.crv${ch}_y1, P.crv${ch}_y2, P.crv${ch}_y3, P.crv${ch}_y4, P.crv_smooth)`
+
+/**
+ * DaVinci-style Primaries adjustment sliders (the row beneath the colour
+ * wheels). Each is neutral at its default, so they're a no-op until used. The
+ * UI (color-wheels.tsx) renders these straight from this list.
+ */
+export const PRIMARY_SLIDERS = [
+  { key: 'pri_temp', label: 'Temp', min: -1, max: 1, default: 0 },
+  { key: 'pri_tint', label: 'Tint', min: -1, max: 1, default: 0 },
+  { key: 'pri_boost', label: 'Color Boost', min: -1, max: 1, default: 0 },
+  { key: 'pri_shadows', label: 'Shadows', min: -1, max: 1, default: 0 },
+  { key: 'pri_highlights', label: 'Highlights', min: -1, max: 1, default: 0 },
+  { key: 'pri_sat', label: 'Saturation', min: 0, max: 2, default: 1 },
+  { key: 'pri_hue', label: 'Hue', min: -1, max: 1, default: 0 },
+] as const
+
+function primarySliders(): ParamDef[] {
+  return PRIMARY_SLIDERS.map((s) => ({
+    key: s.key,
+    label: s.label,
+    group: 'Primaries',
+    type: 'float',
+    default: s.default,
+    min: s.min,
+    max: s.max,
+    step: 0.01,
+  }))
+}
 
 /** Chroma Warp hue sectors (the 6 around the wheel), used by the shader + UI. */
 export const CHROMA_HUES = [
@@ -311,6 +385,10 @@ export const COLOR_CORRECT_NODE: NodeDef = {
     ...curvePts('g'),
     ...curvePts('b'),
     { key: 'crv_smooth', label: 'Smooth', type: 'bool', default: false, group: 'Curves' },
+    ...huePts('hh'),
+    ...huePts('hs'),
+    ...huePts('hl'),
+    ...primarySliders(),
     ...chromaParams(),
     ...colorWarpParams(),
   ],
@@ -377,6 +455,24 @@ export const COLOR_CORRECT_NODE: NodeDef = {
       color = vec3<f32>(${curveCall('r', 'color.r')}, ${curveCall('g', 'color.g')}, ${curveCall('b', 'color.b')});
       color = vec3<f32>(${curveCall('m', 'color.r')}, ${curveCall('m', 'color.g')}, ${curveCall('m', 'color.b')});
 
+      // Primaries adjustment sliders (DaVinci's row under the wheels): warm/cool
+      // temperature and green/magenta tint as channel gains, shadow/highlight
+      // luminance lifts masked by luma, then hue rotation, saturation, and a
+      // color-boost (vibrance) that lifts low-saturation pixels most. All
+      // neutral at their defaults, so this is a no-op until a slider is moved.
+      color.r = color.r * (1.0 + P.pri_temp * 0.3 + P.pri_tint * 0.15);
+      color.g = color.g * (1.0 - P.pri_tint * 0.3);
+      color.b = color.b * (1.0 - P.pri_temp * 0.3 + P.pri_tint * 0.15);
+      let priLuma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+      let priSh = 1.0 - smoothstep(0.0, 0.5, priLuma);
+      let priHi = smoothstep(0.5, 1.0, priLuma);
+      color = color + vec3<f32>(P.pri_shadows * 0.4 * priSh + P.pri_highlights * 0.4 * priHi);
+      var priHsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+      priHsv.x = fract(priHsv.x + P.pri_hue * 0.25); // ±1 -> ±90°
+      priHsv.y = clamp(priHsv.y * P.pri_sat, 0.0, 1.0);
+      priHsv.y = clamp(priHsv.y * (1.0 + P.pri_boost * (1.0 - priHsv.y)), 0.0, 1.0);
+      color = grade_hsv2rgb(priHsv);
+
       // HDR tonal-zone wheels: per-zone colour balance + luminance offset,
       // weighted by overlapping luma masks (DaVinci HDR-palette style). Dark
       // rides the deepest shadows, Shadow the low mids, Light the highlights,
@@ -420,6 +516,19 @@ export const COLOR_CORRECT_NODE: NodeDef = {
       hsvL.x = fract(hsvL.x + lwHue * lwW);
       hsvL.z = clamp(hsvL.z * mix(1.0, lwLum, lwW), 0.0, 4.0);
       color = grade_hsv2rgb(hsvL);
+
+      // Hue curves (DaVinci's Hue vs Hue / Hue vs Sat / Hue vs Lum). The curve's
+      // x-axis is the pixel's hue; its output (centred at 0.5 = neutral) rotates
+      // hue, scales saturation, or scales luminance. Flat 0.5 -> a no-op.
+      var hcHsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+      let hcH = hcHsv.x;
+      let hcHueShift = ${curveCall('hh', 'hcH')} - 0.5; // ±0.5 turn = ±180°
+      let hcSat = ${curveCall('hs', 'hcH')} * 2.0; // 0.5 -> ×1
+      let hcLum = ${curveCall('hl', 'hcH')} * 2.0; // 0.5 -> ×1
+      hcHsv.x = fract(hcHsv.x + hcHueShift);
+      hcHsv.y = clamp(hcHsv.y * hcSat, 0.0, 1.0);
+      hcHsv.z = clamp(hcHsv.z * hcLum, 0.0, 4.0);
+      color = grade_hsv2rgb(hcHsv);
     `,
   },
 }

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Camera, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { detectSourceFps } from '../../editor/detect-fps'
-import { pickAndAddClip } from '../../editor/import-clip'
+import { addClipFiles, pickAndAddClip } from '../../editor/import-clip'
 import { useEngine } from '../../editor/use-engine'
 import { useEditor } from '../../editor/store'
 import { Transport } from './transport'
@@ -34,7 +34,6 @@ export function Viewer() {
   const registerClipFps = useEditor((s) => s.setClipFps)
   const pendingClip = useEditor((s) => s.pendingClip)
   const setPendingClip = useEditor((s) => s.setPendingClip)
-  const addClip = useEditor((s) => s.addClip)
   const capture = useEditor((s) => s.captureStill)
   const clipName = useEditor((s) => s.clipName)
   const hoveredStillId = useEditor((s) => s.hoveredStillId)
@@ -129,8 +128,8 @@ export function Viewer() {
     e.preventDefault()
     dragDepth.current = 0
     setDragging(false)
-    const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('video/'))
-    if (file) addClip(file)
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('video/'))
+    if (files.length > 0) addClipFiles(files)
   }
 
   // Stop the browser from opening a video file if it's dropped outside the

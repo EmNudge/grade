@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import type { NodeDef } from '@grade/nodes'
+import { type NodeDef, PRIMARY_SLIDERS } from '@grade/nodes'
 import { RotateCcw } from 'lucide-react'
 import type { NodeValues } from '../../editor/store'
 import { Slider } from '../ui/slider'
@@ -61,10 +61,54 @@ export function ColorWheels({
   })
 
   return (
-    <div className="grid grid-cols-2 gap-3 p-3 [@media(min-width:520px)]:grid-cols-4">
-      {bands.map((b) => (
-        <Wheel key={b.prefix} band={b} values={values} onChange={onChange} />
-      ))}
+    <div className="flex flex-col gap-1">
+      <div className="grid grid-cols-2 gap-3 p-3 [@media(min-width:520px)]:grid-cols-4">
+        {bands.map((b) => (
+          <Wheel key={b.prefix} band={b} values={values} onChange={onChange} />
+        ))}
+      </div>
+      {/* DaVinci-style adjustment sliders beneath the Primaries wheels. */}
+      {mode === 'primaries' && <PrimarySliders values={values} onChange={onChange} />}
+    </div>
+  )
+}
+
+/** The Temp / Tint / Color Boost / Shadows / Highlights / Saturation / Hue row. */
+function PrimarySliders({
+  values,
+  onChange,
+}: {
+  values: NodeValues
+  onChange: (patch: NodeValues) => void
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-x-4 gap-y-2 border-t border-border px-3 py-3 [@media(min-width:520px)]:grid-cols-2">
+      {PRIMARY_SLIDERS.map((s) => {
+        const value = num(values[s.key], s.default)
+        return (
+          <div
+            key={s.key}
+            className="flex items-center gap-2"
+            onDoubleClick={() => onChange({ [s.key]: s.default })}
+            title={`Double-click to reset ${s.label}`}
+          >
+            <span className="w-20 shrink-0 text-[11px] text-muted-foreground">{s.label}</span>
+            <Slider
+              className="flex-1"
+              value={[value]}
+              min={s.min}
+              max={s.max}
+              step={0.01}
+              onValueChange={(next) =>
+                onChange({ [s.key]: Array.isArray(next) ? next[0] : (next as number) })
+              }
+            />
+            <span className="w-9 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground">
+              {value.toFixed(2)}
+            </span>
+          </div>
+        )
+      })}
     </div>
   )
 }

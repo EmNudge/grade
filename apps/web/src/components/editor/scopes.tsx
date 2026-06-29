@@ -3,10 +3,11 @@ import type { Engine } from '@grade/engine'
 import { useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
 
-type ScopeMode = 'histogram' | 'waveform' | 'vectorscope' | 'falsecolor' | 'clipping'
+type ScopeMode = 'histogram' | 'rgbwave' | 'waveform' | 'vectorscope' | 'falsecolor' | 'clipping'
 
 const MODES: { id: ScopeMode; label: string }[] = [
   { id: 'histogram', label: 'Histogram' },
+  { id: 'rgbwave', label: 'Waveform' },
   { id: 'waveform', label: 'Parade' },
   { id: 'vectorscope', label: 'Vectorscope' },
   { id: 'falsecolor', label: 'False Color' },
@@ -99,6 +100,7 @@ export function Scopes() {
       }
       const m = modeRef.current
       if (m === 'histogram') drawHistogram(octx, frame)
+      else if (m === 'rgbwave') drawWaveform(octx, frame)
       else if (m === 'waveform') drawParade(octx, frame)
       else if (m === 'vectorscope') drawVectorscope(octx, frame)
       else if (m === 'falsecolor') drawFalseColor(octx, frame)
@@ -211,6 +213,64 @@ const PARADE_COLORS: [number, number, number][] = [
   [90, 255, 110],
   [100, 150, 255],
 ]
+
+/**
+ * Overlaid RGB Waveform — like the Parade, but all three channels share the
+ * full image width and are composited on top of each other (DaVinci's
+ * "Waveform"). Where R/G/B stack you read greys/whites; splits reveal a colour
+ * cast at that horizontal position. Column x maps straight to image x.
+ */
+function drawWaveform(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray) {
+  const accs = [new Float32Array(OW * OH), new Float32Array(OW * OH), new Float32Array(OW * OH)]
+  for (let y = 0; y < SH; y++) {
+    for (let x = 0; x < SW; x++) {
+      const i = (y * SW + x) * 4
+      const ox = ((x / (SW - 1)) * (OW - 1)) | 0
+      for (let ch = 0; ch < 3; ch++) {
+        const accCh = accs[ch]
+        if (!accCh) continue
+        const v = (data[i + ch] ?? 0) / 255
+        const oy = ((1 - v) * (OH - 1)) | 0
+        const idx = oy * OW + ox
+        accCh[idx] = (accCh[idx] ?? 0) + 1
+      }
+    }
+  }
+
+  ctx.fillStyle = '#0a0a0a'
+  ctx.fillRect(0, 0, OW, OH)
+  drawGrid(ctx)
+  const img = ctx.getImageData(0, 0, OW, OH)
+  const px = img.data
+  for (let ch = 0; ch < 3; ch++) {
+    const acc = accs[ch]
+    const color = PARADE_COLORS[ch]
+    if (!acc || !color) continue
+    const [cr, cg, cb] = color
+    let max = 1
+    for (let i = 0; i < acc.length; i++) {
+      const a = acc[i]
+      if (a !== undefined && a > max) max = a
+    }
+    const norm = 1 / Math.log1p(max)
+    for (let i = 0; i < acc.length; i++) {
+      const v = acc[i]
+      if (v === undefined || v === 0) continue
+      const a = Math.min(1, Math.log1p(v) * norm * 2.2)
+      const o = i * 4
+      const p0 = px[o]
+      const p1 = px[o + 1]
+      const p2 = px[o + 2]
+      if (p0 === undefined || p1 === undefined || p2 === undefined) continue
+      px[o] = Math.min(255, p0 + cr * a)
+      px[o + 1] = Math.min(255, p1 + cg * a)
+      px[o + 2] = Math.min(255, p2 + cb * a)
+      px[o + 3] = 255
+    }
+  }
+  ctx.putImageData(img, 0, 0)
+  drawLevelScale(ctx)
+}
 
 function drawParade(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray) {
   const third = Math.floor(OW / 3)

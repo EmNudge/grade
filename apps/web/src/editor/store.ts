@@ -300,8 +300,11 @@ interface EditorState {
   // the live document (nodes/edges); switching swaps both footage and grade.
   clips: Clip[]
   activeClipId: string | null
-  /** Add an imported clip to the pool and make it active (loads its footage). */
-  addClip: (file: File) => void
+  /**
+   * Add an imported clip to the pool and make it active (loads its footage).
+   * Returns the new clip's id so callers can attach a thumbnail asynchronously.
+   */
+  addClip: (file: File) => string
   /** Switch to a clip — saves the current graph, restores the target's. */
   selectClip: (id: string) => void
   removeClip: (id: string) => void
@@ -663,6 +666,7 @@ export const useEditor = create<EditorState>((set, get) => {
     // clip keeps its own grade. The first clip adopts the current starter graph;
     // later clips begin from a fresh starter.
     addClip: (file) => {
+      const id = clipId()
       set((s) => {
         const snapped = s.activeClipId
           ? s.clips.map((c) =>
@@ -672,7 +676,6 @@ export const useEditor = create<EditorState>((set, get) => {
         const isFirst = s.clips.length === 0
         const seed = isFirst ? templateOf(s.nodes, s.edges) : null
         const fresh = isFirst ? null : starterGraph()
-        const id = clipId()
         const clip: Clip = {
           id,
           name: file.name,
@@ -693,6 +696,7 @@ export const useEditor = create<EditorState>((set, get) => {
           : base
       })
       get().setPendingClip(file)
+      return id
     },
 
     selectClip: (id) => {
