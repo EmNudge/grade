@@ -24,17 +24,27 @@ function num(v: unknown, fallback: number) {
   return typeof v === 'number' ? v : fallback
 }
 
-/** DaVinci-style Lift/Gamma/Gain/Offset wheels for the color-correct node. */
+// Two wheel sets: classic Lift/Gamma/Gain/Offset primaries, and DaVinci-style
+// HDR tonal zones (Dark/Shadow/Light/Global), masked by luma in the shader.
+export type WheelMode = 'primaries' | 'hdr'
+const WHEEL_PREFIXES: Record<WheelMode, string[]> = {
+  primaries: ['lift', 'gamma', 'gain', 'offset'],
+  hdr: ['dark', 'shadow', 'light', 'global'],
+}
+
+/** DaVinci-style colour wheels for the color-correct node (Primaries or HDR). */
 export function ColorWheels({
   def,
   values,
   onChange,
+  mode,
 }: {
   def: NodeDef
   values: NodeValues
   onChange: (patch: NodeValues) => void
+  mode: WheelMode
 }) {
-  const bands: Band[] = ['lift', 'gamma', 'gain', 'offset'].flatMap((prefix) => {
+  const bands: Band[] = WHEEL_PREFIXES[mode].flatMap((prefix) => {
     const m = def.params.find((p) => p.key === `${prefix}_m`)
     const r = def.params.find((p) => p.key === `${prefix}_r`)
     if (!m || !r) return []
@@ -90,7 +100,7 @@ function Wheel({
   const apply = (clientX: number, clientY: number) => {
     const start = drag.current
     if (!start) return
-    const SENSITIVITY = 0.35
+    const SENSITIVITY = 0.22
     const dnx = ((clientX - start.x) / R) * SENSITIVITY
     const dny = (-(clientY - start.y) / R) * SENSITIVITY
     const clamp = (v: number) => Math.max(-rgbRange, Math.min(rgbRange, v))
@@ -147,11 +157,16 @@ function Wheel({
             'conic-gradient(from 90deg, #ff5a5a, #ffd25a, #5aff7d, #5affff, #5a7dff, #d25aff, #ff5a5a)',
         }}
       >
-        <div className="absolute inset-[30%] rounded-full bg-background/70" />
         <div
           className="absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-black/60 shadow"
           style={{ left: hx, top: hy }}
         />
+      </div>
+
+      {/* Numeric handle position, so the balance isn't only readable graphically. */}
+      <div className="flex w-full justify-between px-1 font-mono text-[10px] tabular-nums text-muted-foreground">
+        <span title="Horizontal balance">x {px.toFixed(2)}</span>
+        <span title="Vertical balance">y {py.toFixed(2)}</span>
       </div>
 
       <Slider

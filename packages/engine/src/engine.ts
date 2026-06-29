@@ -74,6 +74,17 @@ export class Engine {
   private scopeW = 0
   private scopeH = 0
 
+  // Histogram tap: the pass whose *input* texture we snapshot each frame (the
+  // signal entering a node, before its own grade) so the curve editor can show
+  // an upstream distribution. Captured into a dedicated small target during the
+  // live loop, then read back on demand.
+  private histPassId: string | null = null
+  private histReady = false
+  private histTex: GPUTexture | undefined = undefined
+  private histBuf: GPUBuffer | undefined = undefined
+  private histW = 0
+  private histH = 0
+
   private graph?: Graph
   private passes: RuntimePass[] = []
 
@@ -326,6 +337,78 @@ export class Engine {
   }
 
   /**
+   * Choose which pass's *input* the live loop snapshots for the histogram tap,
+   * by compiled pass id (`${nodeId}:${fxId}`). Pass null to stop sampling. The
+   * snapshot is the signal entering that pass — i.e. everything upstream of it,
+   * without that pass's own grade applied.
+   */
+  setHistogramSource(passId: string | null): void {
+    if (passId === this.histPassId) return
+    this.histPassId = passId
+    this.histReady = false
+  }
+
+  /**
+   * Read back the most recent histogram-tap snapshot as tightly-packed 8-bit
+   * pixels at the given (small) analysis resolution. Returns null until the live
+   * loop has captured a frame for the current source pass. Safe to poll during
+   * playback — it only touches the dedicated histogram target.
+   */
+  async sampleNodeInput(
+    width: number,
+    height: number,
+  ): Promise<{
+    data: Uint8ClampedArray
+    format: 'RGBA' | 'BGRA'
+    width: number
+    height: number
+  } | null> {
+    if (!this.histPassId) return null
+    this.ensureHistTarget(width, height)
+    if (!this.histTex || !this.histBuf || !this.histReady) return null
+
+    const bytesPerRow = alignBytesPerRow(width)
+    const encoder = this.device.createCommandEncoder()
+    encoder.copyTextureToBuffer(
+      { texture: this.histTex },
+      { buffer: this.histBuf, bytesPerRow, rowsPerImage: height },
+      { width, height },
+    )
+    this.device.queue.submit([encoder.finish()])
+
+    await this.histBuf.mapAsync(GPUMapMode.READ)
+    const padded = new Uint8Array(this.histBuf.getMappedRange())
+    const rowBytes = width * 4
+    const tight = new Uint8ClampedArray(rowBytes * height)
+    for (let y = 0; y < height; y++) {
+      tight.set(padded.subarray(y * bytesPerRow, y * bytesPerRow + rowBytes), y * rowBytes)
+    }
+    this.histBuf.unmap()
+
+    const format = this.canvasFormat.startsWith('bgra') ? 'BGRA' : 'RGBA'
+    return { data: tight, format, width, height }
+  }
+
+  /** Lazily (re)allocate the histogram-tap target + buffer to the given size. */
+  private ensureHistTarget(w: number, h: number): void {
+    if (this.histTex && this.histW === w && this.histH === h) return
+    this.histTex?.destroy()
+    this.histBuf?.destroy()
+    this.histW = w
+    this.histH = h
+    this.histReady = false
+    this.histTex = this.device.createTexture({
+      size: { width: w, height: h },
+      format: this.canvasFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    })
+    this.histBuf = this.device.createBuffer({
+      size: alignBytesPerRow(w) * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    })
+  }
+
+  /**
    * Import the current source frame, run the effect chain, and read the graded
    * result back off the GPU as tightly-packed 8-bit pixels. Returns null if no
    * frame was importable this tick. Used by export — reading from a dedicated
@@ -410,6 +493,12 @@ export class Engine {
     let final: GPUTexture = this.sourceTex
     let writeToA = true
     for (const pass of this.passes) {
+      // Histogram tap: snapshot this pass's input (everything upstream of it,
+      // pre-grade) into the dedicated target before the pass runs.
+      if (pass.nodeId === this.histPassId && this.histTex) {
+        this.blit(encoder, this.histTex.createView(), srcView)
+        this.histReady = true
+      }
       const dstTex = writeToA ? this.workA : this.workB
       const cpass = encoder.beginComputePass()
       cpass.setPipeline(pass.pipeline)
@@ -494,6 +583,8 @@ export class Engine {
     this.readbackBuf?.destroy()
     this.scopeTex?.destroy()
     this.scopeBuf?.destroy()
+    this.histTex?.destroy()
+    this.histBuf?.destroy()
     for (const p of this.passes) p.uniform.destroy()
     this.passes = []
     for (const tex of this.lutTextures.values()) tex.destroy()

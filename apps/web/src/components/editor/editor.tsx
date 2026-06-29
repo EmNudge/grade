@@ -7,6 +7,7 @@ import { ExportDialog } from './export-dialog'
 import { Inspector } from './inspector'
 import { NodeGraph } from './node-graph'
 import { Scopes } from './scopes'
+import { TemplatesMenu } from './templates-menu'
 import { Viewer } from './viewer'
 import { Button } from '../ui/button'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '../ui/resizable'
@@ -56,6 +57,9 @@ export function Editor() {
             >
               <Redo2 className="size-4" />
             </Button>
+          </div>
+          <div className="ml-1">
+            <TemplatesMenu />
           </div>
           <span className="ml-auto hidden text-[11px] text-muted-foreground md:inline">
             Space play · ⌘K palette · ⌘Z undo · ⌥S/⇧S add · ⌘D bypass · ⌫ delete

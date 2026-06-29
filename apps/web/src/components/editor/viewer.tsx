@@ -1,10 +1,47 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Upload } from 'lucide-react'
+import { Camera, Upload } from 'lucide-react'
+import { toast } from 'sonner'
 import { detectSourceFps } from '../../editor/detect-fps'
 import { useEngine } from '../../editor/use-engine'
 import { useEditor } from '../../editor/store'
 import { Button } from '../ui/button'
+import { StillsGallery } from './stills-gallery'
 import { Transport } from './transport'
+
+/** Seconds → m:ss.ss, for a still's capture-time label. */
+function formatTime(t: number): string {
+  const m = Math.floor(t / 60)
+  const s = (t % 60).toFixed(2).padStart(5, '0')
+  return `${m}:${s}`
+}
+
+/** Grab the engine's current graded frame as a JPEG data URL (capped width). */
+async function grabStill(
+  engine: NonNullable<ReturnType<typeof useEditor.getState>['engine']>,
+): Promise<string | null> {
+  const dims = engine.dimensions
+  if (!dims.width) return null
+  const w = Math.min(480, dims.width)
+  const h = Math.max(1, Math.round((dims.height / dims.width) * w))
+  const frame = await engine.sampleScopes(w, h)
+  if (!frame) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  const out = ctx.createImageData(w, h)
+  const bgra = frame.format === 'BGRA'
+  const d = frame.data
+  for (let i = 0; i < w * h * 4; i += 4) {
+    out.data[i] = d[bgra ? i + 2 : i] ?? 0
+    out.data[i + 1] = d[i + 1] ?? 0
+    out.data[i + 2] = d[bgra ? i : i + 2] ?? 0
+    out.data[i + 3] = 255
+  }
+  ctx.putImageData(out, 0, 0)
+  return canvas.toDataURL('image/jpeg', 0.85)
+}
 
 export function Viewer() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -13,13 +50,36 @@ export function Viewer() {
   const [video, setVideo] = useState<HTMLVideoElement | null>(null)
   const [clipName, setClipName] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const dragDepth = useRef(0)
   const registerVideo = useEditor((s) => s.setVideo)
   const registerCanvas = useEditor((s) => s.setCanvas)
   const registerClipName = useEditor((s) => s.setClipName)
   const registerClipFps = useEditor((s) => s.setClipFps)
+  const addStill = useEditor((s) => s.addStill)
+  const hoveredStillId = useEditor((s) => s.hoveredStillId)
+  const stills = useEditor((s) => s.stills)
+  const hoveredStill = hoveredStillId ? stills.find((x) => x.id === hoveredStillId) : null
 
   const engine = useEngine(canvasRef, video)
+
+  const captureStill = useCallback(async () => {
+    setMenu(null)
+    const eng = useEditor.getState().engine
+    if (!eng) return
+    try {
+      const url = await grabStill(eng)
+      if (!url) {
+        toast.error('No frame to capture yet')
+        return
+      }
+      const time = videoRef.current?.currentTime ?? 0
+      addStill({ url, time, label: formatTime(time) })
+      toast.success('Still captured')
+    } catch {
+      toast.error('Could not capture still')
+    }
+  }, [addStill])
 
   useEffect(() => {
     registerCanvas(canvasRef.current)
@@ -144,34 +204,71 @@ export function Viewer() {
         <input ref={fileRef} type="file" accept="video/*" className="hidden" onChange={onPick} />
       </div>
 
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4">
-        <canvas
-          ref={canvasRef}
-          className="max-h-full max-w-full rounded-sm object-contain shadow-lg"
-        />
-        {!video && !dragging && (
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            className="group absolute inset-3 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border text-center text-sm text-muted-foreground transition-colors hover:border-primary/60 hover:bg-primary/5 hover:text-foreground"
-          >
-            <span className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground shadow-sm transition-colors group-hover:bg-secondary/80">
-              <Upload className="size-4" /> Import clip
-            </span>
-            <span className="space-y-1">
-              <span className="block">Click anywhere here, or drag a clip in.</span>
-              <span className="block text-xs opacity-70">
-                Try DJI D-Log / D-Log M footage — the Color Space Transform maps it to Rec.709.
+      <div className="flex min-h-0 flex-1">
+        <StillsGallery />
+        <div
+          className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4"
+          onContextMenu={(e) => {
+            if (!video) return
+            e.preventDefault()
+            setMenu({ x: e.clientX, y: e.clientY })
+          }}
+        >
+          <canvas
+            ref={canvasRef}
+            className="max-h-full max-w-full rounded-sm object-contain shadow-lg"
+          />
+          {/* Preview the hovered still over the live frame. */}
+          {hoveredStill && (
+            <div className="pointer-events-none absolute inset-4 z-10 flex items-center justify-center">
+              <img
+                src={hoveredStill.url}
+                alt=""
+                className="max-h-full max-w-full rounded-sm object-contain shadow-lg ring-1 ring-primary/60"
+              />
+            </div>
+          )}
+          {menu && (
+            <>
+              <div className="fixed inset-0 z-40" onPointerDown={() => setMenu(null)} />
+              <div
+                className="fixed z-50 min-w-40 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+                style={{ left: menu.x, top: menu.y }}
+              >
+                <button
+                  type="button"
+                  onClick={() => void captureStill()}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted"
+                >
+                  <Camera className="size-3.5" /> Capture still
+                </button>
+              </div>
+            </>
+          )}
+          {!video && !dragging && (
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="group absolute inset-3 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border text-center text-sm text-muted-foreground transition-colors hover:border-primary/60 hover:bg-primary/5 hover:text-foreground"
+            >
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground shadow-sm transition-colors group-hover:bg-secondary/80">
+                <Upload className="size-4" /> Import clip
               </span>
-            </span>
-          </button>
-        )}
-        {dragging && (
-          <div className="pointer-events-none absolute inset-3 z-10 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-primary bg-primary/10 text-center text-sm text-foreground backdrop-blur-sm">
-            <Upload className="size-7" />
-            <p className="font-medium">Drop to load clip</p>
-          </div>
-        )}
+              <span className="space-y-1">
+                <span className="block">Click anywhere here, or drag a clip in.</span>
+                <span className="block text-xs opacity-70">
+                  Try DJI D-Log / D-Log M footage — the Color Space Transform maps it to Rec.709.
+                </span>
+              </span>
+            </button>
+          )}
+          {dragging && (
+            <div className="pointer-events-none absolute inset-3 z-10 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-primary bg-primary/10 text-center text-sm text-foreground backdrop-blur-sm">
+              <Upload className="size-7" />
+              <p className="font-medium">Drop to load clip</p>
+            </div>
+          )}
+        </div>
       </div>
 
       {video && <Transport video={video} />}
