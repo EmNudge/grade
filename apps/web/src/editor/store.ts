@@ -13,8 +13,19 @@ import type { Graph, NodeRole } from '@grade/nodes'
 import { defaultValues } from '@grade/nodes'
 import { create } from 'zustand'
 import { registry } from './registry'
+import type { GraphTemplate, TemplateFx, TemplateNode } from './templates'
 
 export type NodeValues = Record<string, number | string | boolean>
+
+/** A captured reference still — a graded frame snapshot for the stills gallery. */
+export interface Still {
+  id: string
+  /** JPEG/PNG data URL of the graded frame. */
+  url: string
+  /** Source video time (seconds) the still was grabbed at. */
+  time: number
+  label: string
+}
 
 /** A loaded 3D LUT attached to a `lut` FX (out-of-band — not a scalar param). */
 export interface LoadedLut {
@@ -120,6 +131,26 @@ function firstEffectId(nodes: GradeNode[]): string | null {
   return nodes.find((n) => n.data.role === 'effect')?.id ?? null
 }
 
+/** Snapshot one FX instance for a template (drops the runtime id + loaded LUT). */
+function toTemplateFx(f: FxInstance): TemplateFx {
+  const tf: TemplateFx = { type: f.type, values: { ...f.values } }
+  if (f.base) tf.base = true
+  return tf
+}
+
+/** Snapshot one node's structure for a template (drops id + position). */
+function toTemplateNode(n: GradeNode): TemplateNode {
+  const tn: TemplateNode = {
+    role: n.data.role,
+    fx: n.data.fx.map(toTemplateFx),
+    enabled: n.data.enabled,
+  }
+  if (n.data.ioType) tn.ioType = n.data.ioType
+  if (n.data.label) tn.label = n.data.label
+  if (n.data.accent) tn.accent = n.data.accent
+  return tn
+}
+
 interface EditorState {
   nodes: GradeNode[]
   edges: Edge[]
@@ -166,6 +197,17 @@ interface EditorState {
   future: Snapshot[]
   undo: () => void
   redo: () => void
+
+  // Reusable graph templates (structure only, no positions).
+  getTemplate: () => GraphTemplate
+  applyTemplate: (t: GraphTemplate) => void
+
+  // Captured reference stills (session-scoped) + the one hovered for preview.
+  stills: Still[]
+  hoveredStillId: string | null
+  addStill: (still: Omit<Still, 'id'>) => void
+  removeStill: (id: string) => void
+  setHoveredStill: (id: string | null) => void
 
   toGraph: () => Graph
   structureKey: () => string
@@ -215,6 +257,8 @@ export const useEditor = create<EditorState>((set, get) => {
     clipFps: null,
     past: [],
     future: [],
+    stills: [],
+    hoveredStillId: null,
 
     // Drags and removals are undoable (one step per drag); pure selection and
     // dimension-measurement changes from React Flow are not.
@@ -440,6 +484,69 @@ export const useEditor = create<EditorState>((set, get) => {
           activeFxId: next.activeFxId,
         }
       }),
+
+    // Capture the current document as a position-less, LUT-less template.
+    getTemplate: () => {
+      const { nodes, edges } = get()
+      const index = new Map(nodes.map((n, i) => [n.id, i]))
+      return {
+        nodes: nodes.map(toTemplateNode),
+        edges: edges.flatMap((e) => {
+          const a = index.get(e.source)
+          const b = index.get(e.target)
+          return a === undefined || b === undefined ? [] : [[a, b] as [number, number]]
+        }),
+      }
+    },
+
+    // Rebuild the graph from a template — fresh ids, auto-laid-out in a row
+    // (positions aren't part of a template, so the exact placement is synthetic).
+    applyTemplate: (t) => {
+      commit()
+      set(() => {
+        const ids: string[] = []
+        const nodes: GradeNode[] = t.nodes.map((tn, i) => {
+          const id = tn.role === 'effect' ? nextId('node') : nextId(tn.ioType ?? tn.role)
+          ids[i] = id
+          const fx: FxInstance[] = tn.fx.map((f) => ({
+            id: fxId(),
+            type: f.type,
+            values: { ...f.values },
+            ...(f.base ? { base: true } : {}),
+          }))
+          return {
+            id,
+            type: 'grade',
+            position: { x: i * 240, y: 120 },
+            deletable: tn.role === 'effect',
+            data: {
+              role: tn.role,
+              ...(tn.ioType ? { ioType: tn.ioType } : {}),
+              fx,
+              enabled: tn.enabled,
+              ...(tn.label ? { label: tn.label } : {}),
+              ...(tn.accent ? { accent: tn.accent } : {}),
+            },
+          }
+        })
+        const edges: Edge[] = t.edges.flatMap(([a, b]) => {
+          const from = ids[a]
+          const to = ids[b]
+          return from && to ? [connect(from, to)] : []
+        })
+        const selectedId = nodes.find((n) => n.data.role === 'effect')?.id ?? null
+        return { nodes, edges, selectedId, activeFxId: null }
+      })
+    },
+
+    addStill: (still) =>
+      set((s) => ({ stills: [{ ...still, id: `still-${++fxCounter}` }, ...s.stills] })),
+    removeStill: (id) =>
+      set((s) => ({
+        stills: s.stills.filter((x) => x.id !== id),
+        hoveredStillId: s.hoveredStillId === id ? null : s.hoveredStillId,
+      })),
+    setHoveredStill: (id) => set({ hoveredStillId: id }),
 
     toGraph: () => {
       const { nodes, edges } = get()

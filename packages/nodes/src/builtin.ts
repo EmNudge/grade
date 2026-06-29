@@ -85,44 +85,6 @@ export const COLOR_SPACE_NODE: NodeDef = {
   },
 }
 
-/**
- * Contrast / Brightness — the canonical "first node". Pivots contrast around
- * mid-gray, then offsets brightness.
- */
-export const CONTRAST_BRIGHTNESS_NODE: NodeDef = {
-  type: 'contrast-brightness',
-  label: 'Contrast / Brightness',
-  category: 'FX',
-  role: 'effect',
-  fx: true,
-  accent: '#f59e0b',
-  params: [
-    {
-      key: 'contrast',
-      label: 'Contrast',
-      type: 'float',
-      default: 1,
-      min: 0,
-      max: 2,
-      step: 0.01,
-    },
-    {
-      key: 'brightness',
-      label: 'Brightness',
-      type: 'float',
-      default: 0,
-      min: -0.5,
-      max: 0.5,
-      step: 0.005,
-    },
-  ],
-  kernel: {
-    body: /* wgsl */ `
-      color = (color - vec3<f32>(0.5)) * P.contrast + vec3<f32>(0.5) + vec3<f32>(P.brightness);
-    `,
-  },
-}
-
 /** Build the 4 params (master + R/G/B) for one LGGO band. */
 function band(
   prefix: string,
@@ -251,6 +213,13 @@ export const COLOR_CORRECT_NODE: NodeDef = {
     ...band('gamma', 'Gamma', 1, 0.2, 3, 0.5),
     ...band('gain', 'Gain', 1, 0, 3, 0.5),
     ...band('offset', 'Offset', 0, -0.3, 0.3, 0.3),
+    // HDR tonal-zone wheels (Dark / Shadow / Light / Global). Master is an
+    // additive luminance offset; R/G/B a colour balance. All neutral (0) by
+    // default, so they're a no-op until the HDR wheels are used.
+    ...band('dark', 'Dark', 0, -0.5, 0.5, 0.5),
+    ...band('shadow', 'Shadow', 0, -0.5, 0.5, 0.5),
+    ...band('light', 'Light', 0, -0.5, 0.5, 0.5),
+    ...band('global', 'Global', 0, -0.5, 0.5, 0.5),
     ...curvePts('m'),
     ...curvePts('r'),
     ...curvePts('g'),
@@ -321,6 +290,20 @@ export const COLOR_CORRECT_NODE: NodeDef = {
       color = vec3<f32>(${curveCall('r', 'color.r')}, ${curveCall('g', 'color.g')}, ${curveCall('b', 'color.b')});
       color = vec3<f32>(${curveCall('m', 'color.r')}, ${curveCall('m', 'color.g')}, ${curveCall('m', 'color.b')});
 
+      // HDR tonal-zone wheels: per-zone colour balance + luminance offset,
+      // weighted by overlapping luma masks (DaVinci HDR-palette style). Dark
+      // rides the deepest shadows, Shadow the low mids, Light the highlights,
+      // and Global applies everywhere.
+      let zoneLuma = clamp(dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+      let wDark = 1.0 - smoothstep(0.0, 0.45, zoneLuma);
+      let wShadow = smoothstep(0.0, 0.35, zoneLuma) * (1.0 - smoothstep(0.35, 0.8, zoneLuma));
+      let wLight = smoothstep(0.5, 1.0, zoneLuma);
+      let darkZone = vec3<f32>(P.dark_m) + vec3<f32>(P.dark_r, P.dark_g, P.dark_b);
+      let shadowZone = vec3<f32>(P.shadow_m) + vec3<f32>(P.shadow_r, P.shadow_g, P.shadow_b);
+      let lightZone = vec3<f32>(P.light_m) + vec3<f32>(P.light_r, P.light_g, P.light_b);
+      let globalZone = vec3<f32>(P.global_m) + vec3<f32>(P.global_r, P.global_g, P.global_b);
+      color = color + darkZone * wDark + shadowZone * wShadow + lightZone * wLight + globalZone;
+
       // Chroma Warp: per-hue hue-shift + saturation, blended around the wheel.
       var hsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
       var cwH = array<f32, 6>(P.cw_h_r, P.cw_h_y, P.cw_h_g, P.cw_h_c, P.cw_h_b, P.cw_h_m);
@@ -384,6 +367,71 @@ export const GLOW_NODE: NodeDef = {
         }
       }
       color = color + (glow / 25.0) * P.intensity;
+    `,
+  },
+}
+
+/**
+ * Blur — a simple 5×5 box blur. Averages neighbouring texels over a radius and
+ * mixes the result back with `amount`. Samples from the source texture (the
+ * kernel has `src`/`coord`/`dims` in scope).
+ */
+export const BLUR_NODE: NodeDef = {
+  type: 'blur',
+  label: 'Blur',
+  category: 'FX',
+  role: 'effect',
+  fx: true,
+  accent: '#64748b',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    { key: 'radius', label: 'Radius', type: 'float', default: 2, min: 0.5, max: 8, step: 0.1 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let maxc = vec2<i32>(vec2<i32>(dims) - vec2<i32>(1));
+      var sum = vec3<f32>(0.0);
+      for (var dy = -2; dy <= 2; dy = dy + 1) {
+        for (var dx = -2; dx <= 2; dx = dx + 1) {
+          let o = vec2<i32>(i32(f32(dx) * P.radius), i32(f32(dy) * P.radius));
+          let sc = clamp(coord + o, vec2<i32>(0, 0), maxc);
+          sum += textureLoad(src, sc, 0).rgb;
+        }
+      }
+      color = mix(color, sum / 25.0, P.amount);
+    `,
+  },
+}
+
+/**
+ * Sharpen — unsharp mask. Subtracts a box-blurred copy from the image to
+ * recover high-frequency detail, scaled by `amount`. Samples neighbours from
+ * the source texture (the kernel has `src`/`coord`/`dims` in scope).
+ */
+export const SHARPEN_NODE: NodeDef = {
+  type: 'sharpen',
+  label: 'Sharpen',
+  category: 'FX',
+  role: 'effect',
+  fx: true,
+  accent: '#0ea5e9',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 0.5, min: 0, max: 2, step: 0.01 },
+    { key: 'radius', label: 'Radius', type: 'float', default: 1.5, min: 0.5, max: 4, step: 0.1 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let maxc = vec2<i32>(vec2<i32>(dims) - vec2<i32>(1));
+      var sum = vec3<f32>(0.0);
+      for (var dy = -2; dy <= 2; dy = dy + 1) {
+        for (var dx = -2; dx <= 2; dx = dx + 1) {
+          let o = vec2<i32>(i32(f32(dx) * P.radius), i32(f32(dy) * P.radius));
+          let sc = clamp(coord + o, vec2<i32>(0, 0), maxc);
+          sum += textureLoad(src, sc, 0).rgb;
+        }
+      }
+      let blurred = sum / 25.0;
+      color = color + (color - blurred) * P.amount;
     `,
   },
 }
@@ -675,10 +723,11 @@ export const BUILTIN_NODES: NodeDef[] = [
   COLOR_CORRECT_NODE,
   LUT_NODE,
   GLOW_NODE,
+  BLUR_NODE,
+  SHARPEN_NODE,
   HALATION_NODE,
   SPLIT_TONE_NODE,
   FILM_LOOK_NODE,
-  CONTRAST_BRIGHTNESS_NODE,
   OUTPUT_NODE,
 ]
 

@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { RotateCcw } from 'lucide-react'
-import type { NodeValues } from '../../editor/store'
+import { type NodeValues, useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
 
 // Must match CURVE_MAX in @grade/nodes builtin.ts.
@@ -20,6 +20,42 @@ interface Pt {
 
 function num(v: unknown, fallback: number) {
   return typeof v === 'number' ? v : fallback
+}
+
+// Analysis resolution + poll cadence for the upstream histogram backdrop.
+const HIST_W = 256
+const HIST_H = 144
+const HIST_INTERVAL_MS = 100
+
+interface Frame {
+  data: Uint8ClampedArray
+  format: 'RGBA' | 'BGRA'
+}
+
+/** 256-bin distribution of a frame's pixels for one channel (R/G/B or Y luma). */
+function histogramBins(frame: Frame, ch: Ch): number[] {
+  const { data } = frame
+  const bgra = frame.format === 'BGRA'
+  const bins = new Float32Array(256)
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[bgra ? i + 2 : i] ?? 0
+    const g = data[i + 1] ?? 0
+    const b = data[bgra ? i : i + 2] ?? 0
+    const v =
+      ch === 'r'
+        ? r
+        : ch === 'g'
+          ? g
+          : ch === 'b'
+            ? b
+            : Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b)
+    const bin = v < 0 ? 0 : v > 255 ? 255 : v
+    bins[bin] = (bins[bin] ?? 0) + 1
+  }
+  // Normalise to the tallest interior bin so pure-black/white spikes don't flatten it.
+  let max = 1
+  for (let i = 1; i < 255; i++) max = Math.max(max, bins[i] ?? 0)
+  return Array.from(bins, (c) => Math.min(1, c / max))
 }
 
 // Mirrors the shader's grade_curveN: linear, or Catmull-Rom when smooth.
@@ -62,15 +98,63 @@ function evalCurve(x: number, pts: Pt[], smooth: boolean): number {
 export function CurveEditor({
   values,
   onChange,
+  histogramSource,
 }: {
   values: NodeValues
   onChange: (patch: NodeValues) => void
+  /** Compiled pass id (`${nodeId}:${fxId}`) whose input feeds the histogram. */
+  histogramSource?: string
 }) {
   const [ch, setCh] = useState<Ch>('m')
   const svgRef = useRef<SVGSVGElement>(null)
   const dragIndex = useRef<number | null>(null)
   const color = CHANNELS.find((c) => c.id === ch)!.color
   const smooth = Boolean(values['crv_smooth'])
+
+  // Upstream signal distribution, drawn behind the grid. Sampled off the engine
+  // at the node's input, so it reflects everything before this curve.
+  const engine = useEditor((s) => s.engine)
+  const [hist, setHist] = useState<number[] | null>(null)
+  const chRef = useRef(ch)
+  chRef.current = ch
+
+  useEffect(() => {
+    if (!engine || !histogramSource) {
+      setHist(null)
+      return undefined
+    }
+    engine.setHistogramSource(histogramSource)
+    const live = { current: true }
+    let busy = false
+    let timer = 0
+    const tick = async () => {
+      if (!live.current) return
+      if (!busy) {
+        busy = true
+        try {
+          const frame = await engine.sampleNodeInput(HIST_W, HIST_H)
+          if (live.current) setHist(frame ? histogramBins(frame, chRef.current) : null)
+        } catch {
+          /* readback hiccup — keep the last histogram */
+        }
+        busy = false
+      }
+      timer = window.setTimeout(() => void tick(), HIST_INTERVAL_MS)
+    }
+    void tick()
+    return () => {
+      live.current = false
+      window.clearTimeout(timer)
+      engine.setHistogramSource(null)
+    }
+  }, [engine, histogramSource])
+
+  // Filled area under the (normalised) bins, in the 0..100 viewBox; bottom-anchored.
+  const histPoints =
+    hist &&
+    `0,100 ${hist
+      .map((v, i) => `${((i / 255) * 100).toFixed(2)},${(100 - v * 90).toFixed(2)}`)
+      .join(' ')} 100,100`
 
   const count = Math.round(num(values[`crv${ch}_n`], 2))
   const pts: Pt[] = Array.from({ length: count }, (_, i) => ({
@@ -188,10 +272,10 @@ export function CurveEditor({
         ref={svgRef}
         viewBox="0 0 100 100"
         preserveAspectRatio="none"
-        className="aspect-square w-full max-w-[240px] touch-none rounded-md border border-border bg-[#0d0d0d]"
+        className="aspect-[4/3] w-full max-w-[260px] touch-none rounded-md border border-border bg-[#0d0d0d]"
         onPointerDown={(e) => {
           // Click on empty graph -> add a point and immediately start dragging it.
-          if (e.target !== svgRef.current || count >= MAX) return
+          if (e.button !== 0 || e.target !== svgRef.current || count >= MAX) return
           const p = fromEvent(e.clientX, e.clientY)
           const nx = round(p.x)
           dragIndex.current = pts.filter((q) => q.x < nx).length
@@ -206,6 +290,9 @@ export function CurveEditor({
           svgRef.current?.releasePointerCapture(e.pointerId)
         }}
       >
+        {histPoints && (
+          <polygon points={histPoints} fill={color} fillOpacity={0.16} stroke="none" />
+        )}
         {[25, 50, 75].map((g) => (
           <g key={g} stroke="rgba(255,255,255,0.07)" strokeWidth={0.5}>
             <line x1={g} y1={0} x2={g} y2={100} />
@@ -231,16 +318,21 @@ export function CurveEditor({
             strokeWidth={0.6}
             className="cursor-grab"
             onPointerDown={(e) => {
+              if (e.button !== 0) return // let right-click fall through to remove
               e.stopPropagation()
               dragIndex.current = i
               svgRef.current?.setPointerCapture(e.pointerId)
             }}
-            onDoubleClick={() => removePoint(i)}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              removePoint(i)
+            }}
           />
         ))}
       </svg>
       <p className="text-[10px] text-muted-foreground">
-        Click + drag to add · double-click to remove · Spline for curves
+        Click + drag to add · right-click to remove · Spline for curves
       </p>
     </div>
   )

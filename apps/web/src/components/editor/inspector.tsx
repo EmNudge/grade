@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { parseCubeLut } from '@grade/color'
 import type { NodeDef, ParamDef } from '@grade/nodes'
 import { Plus, Sparkles, Upload, X } from 'lucide-react'
@@ -17,8 +17,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu'
+import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { NativeSelect, NativeSelectOption } from '../ui/native-select'
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
 import { Slider } from '../ui/slider'
 import { Switch } from '../ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
@@ -39,7 +41,7 @@ export function Inspector() {
   const setFxLut = useEditor((s) => s.setFxLut)
   const addFx = useEditor((s) => s.addFx)
   const removeFx = useEditor((s) => s.removeFx)
-  const [tab, setTab] = useState<'base' | 'fx'>('base')
+  const [tab, setTab] = useState<InspectorTab>('primaries')
 
   if (!node || node.data.role !== 'effect') {
     return (
@@ -53,52 +55,64 @@ export function Inspector() {
   const fxList = node.data.fx
   const baseFx = fxList.find((f) => f.base) ?? fxList[0]
   const extraFx = fxList.filter((f) => !f.base)
-  const baseLabel = registry.get(baseFx?.type ?? 'color-correct')?.label ?? 'Lift / Gamma / Gain'
+  const baseDef = baseFx ? registry.get(baseFx.type) : undefined
+  const onBase = (patch: NodeValues) => {
+    if (baseFx) updateFxValues(node.id, baseFx.id, patch)
+  }
 
   return (
     <Tabs
       value={tab}
-      onValueChange={(v) => setTab(v as 'base' | 'fx')}
+      onValueChange={(v) => setTab(v as InspectorTab)}
       className="flex h-full min-h-0 flex-col gap-0"
     >
-      {/* Two master tabs: the base corrector, and an FX bin. */}
+      {/* One flat tab row: the corrector views on the left, FX bin pinned right. */}
       <div className="border-b border-border px-2 py-1.5">
-        <TabsList variant="line" className="h-auto flex-wrap justify-start gap-1">
-          <TabsTrigger value="base">{baseLabel}</TabsTrigger>
-          <TabsTrigger value="fx" className="min-w-0 max-w-[220px] justify-start">
+        <TabsList variant="line" className="h-auto w-full justify-start gap-1">
+          <TabsTrigger value="primaries" className="flex-none">
+            Primaries
+          </TabsTrigger>
+          <TabsTrigger value="hdr" className="flex-none">
+            HDR
+          </TabsTrigger>
+          <TabsTrigger value="curves" className="flex-none">
+            Curves
+          </TabsTrigger>
+          <TabsTrigger value="chroma" className="flex-none">
+            Chroma Warp
+          </TabsTrigger>
+          <TabsTrigger value="fx" className="ml-auto min-w-0 max-w-[220px] flex-none justify-start">
             <span className="truncate">{fxTabLabel(extraFx)}</span>
           </TabsTrigger>
         </TabsList>
       </div>
 
-      <TabsContent value="base" className="min-h-0 flex-1 overflow-y-auto">
-        {baseFx && (
-          <FxPanel fx={baseFx} onChange={(patch) => updateFxValues(node.id, baseFx.id, patch)} />
+      <TabsContent value="primaries" className="min-h-0 flex-1 overflow-y-auto">
+        {baseDef && baseFx && (
+          <ColorWheels def={baseDef} values={baseFx.values} onChange={onBase} mode="primaries" />
         )}
+      </TabsContent>
+      <TabsContent value="hdr" className="min-h-0 flex-1 overflow-y-auto">
+        {baseDef && baseFx && (
+          <ColorWheels def={baseDef} values={baseFx.values} onChange={onBase} mode="hdr" />
+        )}
+      </TabsContent>
+      <TabsContent value="curves" className="min-h-0 flex-1 overflow-y-auto p-2">
+        {baseFx && (
+          <CurveEditor
+            values={baseFx.values}
+            onChange={onBase}
+            histogramSource={`${node.id}:${baseFx.id}`}
+          />
+        )}
+      </TabsContent>
+      <TabsContent value="chroma" className="min-h-0 flex-1 overflow-y-auto p-2">
+        {baseFx && <ChromaWarp values={baseFx.values} onChange={onBase} />}
       </TabsContent>
 
       <TabsContent value="fx" className="min-h-0 flex-1 overflow-y-auto">
         <div className="flex flex-col gap-3 p-2">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={<Button size="sm" variant="secondary" className="h-7 gap-1.5 self-start" />}
-            >
-              <Plus className="size-3.5" /> Add FX
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuGroup>
-                {fxDefs.map((def) => (
-                  <DropdownMenuItem key={def.type} onClick={() => addFx(node.id, def.type)}>
-                    <span
-                      className="mr-2 size-2 rounded-full"
-                      style={{ background: def.accent ?? 'currentColor' }}
-                    />
-                    {def.label}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <AddFxMenu defs={fxDefs} onAdd={(type) => addFx(node.id, type)} />
 
           {extraFx.length === 0 && (
             <p className="px-1 text-xs text-muted-foreground">
@@ -120,6 +134,72 @@ export function Inspector() {
   )
 }
 
+/** The Inspector's flat tab set: four corrector views plus the FX bin. */
+type InspectorTab = 'primaries' | 'hdr' | 'curves' | 'chroma' | 'fx'
+
+/** Searchable "Add FX" menu — type to filter the available effects, click to add. */
+function AddFxMenu({ defs, onAdd }: { defs: NodeDef[]; onAdd: (type: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const q = query.trim().toLowerCase()
+  const filtered = q ? defs.filter((d) => d.label.toLowerCase().includes(q)) : defs
+
+  // Focus the search field when the menu opens, without an a11y-flagged autoFocus.
+  useEffect(() => {
+    if (open) requestAnimationFrame(() => inputRef.current?.focus())
+  }, [open])
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        if (!next) setQuery('')
+      }}
+    >
+      <PopoverTrigger
+        render={<Button size="sm" variant="secondary" className="h-7 gap-1.5 self-end" />}
+      >
+        <Plus className="size-3.5" /> Add FX
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 gap-2 p-1.5">
+        <Input
+          ref={inputRef}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search effects…"
+          className="h-7 text-xs"
+        />
+        <div className="flex max-h-64 flex-col overflow-y-auto">
+          {filtered.length === 0 ? (
+            <p className="px-2 py-1.5 text-xs text-muted-foreground">No effects found.</p>
+          ) : (
+            filtered.map((def) => (
+              <button
+                key={def.type}
+                type="button"
+                onClick={() => {
+                  onAdd(def.type)
+                  setOpen(false)
+                  setQuery('')
+                }}
+                className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs transition-colors hover:bg-accent hover:text-accent-foreground"
+              >
+                <span
+                  className="size-2 shrink-0 rounded-full"
+                  style={{ background: def.accent ?? 'currentColor' }}
+                />
+                {def.label}
+              </button>
+            ))
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function FxPanel({
   fx,
   onChange,
@@ -133,28 +213,6 @@ function FxPanel({
 }) {
   const def = registry.get(fx.type)
   if (!def) return null
-
-  // Base corrector: render bare (it owns the whole tab).
-  if (fx.type === 'color-correct') {
-    return (
-      <Tabs defaultValue="wheels" className="flex flex-col gap-0 p-2">
-        <TabsList variant="line" className="mb-1 self-start">
-          <TabsTrigger value="wheels">Wheels</TabsTrigger>
-          <TabsTrigger value="curves">Curves</TabsTrigger>
-          <TabsTrigger value="chroma">Chroma Warp</TabsTrigger>
-        </TabsList>
-        <TabsContent value="wheels">
-          <ColorWheels def={def} values={fx.values} onChange={onChange} />
-        </TabsContent>
-        <TabsContent value="curves" className="p-2">
-          <CurveEditor values={fx.values} onChange={onChange} />
-        </TabsContent>
-        <TabsContent value="chroma" className="p-2">
-          <ChromaWarp values={fx.values} onChange={onChange} />
-        </TabsContent>
-      </Tabs>
-    )
-  }
 
   // Stacked FX: a labelled card with its own remove control.
   return (

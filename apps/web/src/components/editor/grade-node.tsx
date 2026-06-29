@@ -37,7 +37,9 @@ export function GradeNodeView({ id, data }: NodeProps<GradeNodeType>) {
 
   const selected = selectedId === id
   const disabled = !data.enabled
-  const fxNames = data.fx.map((f) => registry.get(f.type)?.label ?? f.type)
+  // The base Lift/Gamma/Gain corrector is automatic on every node — list only
+  // the FX stacked on top of it.
+  const fxNames = data.fx.filter((f) => !f.base).map((f) => registry.get(f.type)?.label ?? f.type)
 
   return (
     <div
@@ -68,7 +70,7 @@ export function GradeNodeView({ id, data }: NodeProps<GradeNodeType>) {
         )}
       </div>
       <div className="truncate px-3 py-2 text-[11px] text-muted-foreground">
-        {fxNames.join(' · ')}
+        {fxNames.length > 0 ? fxNames.join(' · ') : 'No effects'}
       </div>
 
       <Handle type="target" position={Position.Left} className={handleClass} />
