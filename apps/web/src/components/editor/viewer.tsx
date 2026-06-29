@@ -1,66 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Camera, Upload } from 'lucide-react'
 import { toast } from 'sonner'
-import { putClipHandle } from '../../editor/clip-handles'
 import { detectSourceFps } from '../../editor/detect-fps'
-import { pickOpenFile } from '../../editor/save-file'
+import { pickAndAddClip } from '../../editor/import-clip'
 import { useEngine } from '../../editor/use-engine'
 import { useEditor } from '../../editor/store'
-import { Button } from '../ui/button'
-import { StillsGallery } from './stills-gallery'
 import { Transport } from './transport'
 
-/** Concrete MIME types so the native open dialog accepts common video files. */
-const CLIP_ACCEPT = {
-  description: 'Video clip',
-  accept: {
-    'video/mp4': ['.mp4', '.m4v'],
-    'video/quicktime': ['.mov'],
-    'video/webm': ['.webm'],
-    'video/x-matroska': ['.mkv'],
-  },
-}
-
-/** Seconds → m:ss.ss, for a still's capture-time label. */
-function formatTime(t: number): string {
-  const m = Math.floor(t / 60)
-  const s = (t % 60).toFixed(2).padStart(5, '0')
-  return `${m}:${s}`
-}
-
-/** Grab the engine's current graded frame as a JPEG data URL (capped width). */
-async function grabStill(
-  engine: NonNullable<ReturnType<typeof useEditor.getState>['engine']>,
-): Promise<string | null> {
-  const dims = engine.dimensions
-  if (!dims.width) return null
-  const w = Math.min(480, dims.width)
-  const h = Math.max(1, Math.round((dims.height / dims.width) * w))
-  const frame = await engine.sampleScopes(w, h)
-  if (!frame) return null
+/** Draw the current video frame to a small JPEG data URL for a clip's bin tile. */
+function grabThumbnail(el: HTMLVideoElement): string | null {
+  if (!el.videoWidth) return null
+  const w = 128
+  const h = Math.max(1, Math.round((el.videoHeight / el.videoWidth) * w))
   const canvas = document.createElement('canvas')
   canvas.width = w
   canvas.height = h
   const ctx = canvas.getContext('2d')
   if (!ctx) return null
-  const out = ctx.createImageData(w, h)
-  const bgra = frame.format === 'BGRA'
-  const d = frame.data
-  for (let i = 0; i < w * h * 4; i += 4) {
-    out.data[i] = d[bgra ? i + 2 : i] ?? 0
-    out.data[i + 1] = d[i + 1] ?? 0
-    out.data[i + 2] = d[bgra ? i : i + 2] ?? 0
-    out.data[i + 3] = 255
-  }
-  ctx.putImageData(out, 0, 0)
-  return canvas.toDataURL('image/jpeg', 0.85)
+  ctx.drawImage(el, 0, 0, w, h)
+  return canvas.toDataURL('image/jpeg', 0.6)
 }
 
 export function Viewer() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [video, setVideo] = useState<HTMLVideoElement | null>(null)
-  const [clipName, setClipName] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const dragDepth = useRef(0)
@@ -70,7 +34,9 @@ export function Viewer() {
   const registerClipFps = useEditor((s) => s.setClipFps)
   const pendingClip = useEditor((s) => s.pendingClip)
   const setPendingClip = useEditor((s) => s.setPendingClip)
-  const addStill = useEditor((s) => s.addStill)
+  const addClip = useEditor((s) => s.addClip)
+  const capture = useEditor((s) => s.captureStill)
+  const clipName = useEditor((s) => s.clipName)
   const hoveredStillId = useEditor((s) => s.hoveredStillId)
   const stills = useEditor((s) => s.stills)
   const hoveredStill = hoveredStillId ? stills.find((x) => x.id === hoveredStillId) : null
@@ -79,21 +45,13 @@ export function Viewer() {
 
   const captureStill = useCallback(async () => {
     setMenu(null)
-    const eng = useEditor.getState().engine
-    if (!eng) return
     try {
-      const url = await grabStill(eng)
-      if (!url) {
-        toast.error('No frame to capture yet')
-        return
-      }
-      const time = videoRef.current?.currentTime ?? 0
-      addStill({ url, time, label: formatTime(time) })
-      toast.success('Still captured')
+      if (await capture()) toast.success('Still captured')
+      else toast.error('No frame to capture yet')
     } catch {
       toast.error('Could not capture still')
     }
-  }, [addStill])
+  }, [capture])
 
   useEffect(() => {
     registerCanvas(canvasRef.current)
@@ -118,7 +76,6 @@ export function Viewer() {
       if (!file.type.startsWith('video/')) return
       const el = ensureVideo()
       el.src = URL.createObjectURL(file)
-      setClipName(file.name)
       registerClipName(file.name)
       registerClipFps(null)
       // oxlint-disable-next-line unicorn/prefer-add-event-listener -- single reused <video> element; assignment intentionally replaces the prior load's handler instead of stacking
@@ -134,20 +91,16 @@ export function Viewer() {
         // Estimate the clip's frame rate while it plays, for the export default.
         void detectSourceFps(el).then((fps) => registerClipFps(fps))
       }
+      // Once the first frame decodes, stash a thumbnail on the active clip tile.
+      // oxlint-disable-next-line unicorn/prefer-add-event-listener -- single reused <video> element; assignment replaces the prior load's handler
+      el.onloadeddata = () => {
+        const url = grabThumbnail(el)
+        const aid = useEditor.getState().activeClipId
+        if (url && aid) useEditor.getState().setClipThumbnail(aid, url)
+      }
     },
     [ensureVideo, registerVideo, registerClipName, registerClipFps],
   )
-
-  // Open via the file picker; when a real handle comes back, remember it so a
-  // project can re-open this footage in a later session.
-  const openClip = useCallback(async () => {
-    const picked = await pickOpenFile(CLIP_ACCEPT)
-    if (!picked) return
-    loadFile(picked.file)
-    if (picked.handle && picked.file.type.startsWith('video/')) {
-      void putClipHandle(picked.file.name, picked.handle)
-    }
-  }, [loadFile])
 
   // Load footage requested from elsewhere (e.g. a project reopening its clip).
   useEffect(() => {
@@ -177,7 +130,7 @@ export function Viewer() {
     dragDepth.current = 0
     setDragging(false)
     const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('video/'))
-    if (file) loadFile(file)
+    if (file) addClip(file)
   }
 
   // Stop the browser from opening a video file if it's dropped outside the
@@ -205,17 +158,10 @@ export function Viewer() {
       onDrop={onDrop}
     >
       <div className="flex items-center justify-between gap-2 border-b border-border bg-background px-3 py-2">
-        <div className="flex items-center gap-2">
-          {clipName ? (
-            <>
-              <Button size="sm" variant="ghost" onClick={() => void openClip()} className="gap-1.5">
-                <Upload className="size-4" /> Replace
-              </Button>
-              <span className="truncate text-xs text-muted-foreground">{clipName}</span>
-            </>
-          ) : (
-            <span className="text-xs text-muted-foreground">No clip loaded</span>
-          )}
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-xs text-muted-foreground">
+            {clipName ?? 'No clip loaded'}
+          </span>
         </div>
         <StatusPill
           status={engine.status}
@@ -225,7 +171,6 @@ export function Viewer() {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <StillsGallery />
         <div
           className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4"
           onContextMenu={(e) => {
@@ -268,7 +213,7 @@ export function Viewer() {
           {!video && !dragging && (
             <button
               type="button"
-              onClick={() => void openClip()}
+              onClick={() => void pickAndAddClip()}
               className="group absolute inset-3 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-lg border-2 border-dashed border-border text-center text-sm text-muted-foreground transition-colors hover:border-primary/60 hover:bg-primary/5 hover:text-foreground"
             >
               <span className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-3 py-1.5 text-xs font-medium text-secondary-foreground shadow-sm transition-colors group-hover:bg-secondary/80">

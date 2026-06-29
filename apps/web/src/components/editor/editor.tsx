@@ -7,6 +7,7 @@ import { useShortcuts } from '../../editor/use-shortcuts'
 import { CommandPalette } from './command-palette'
 import { ExportDialog } from './export-dialog'
 import { Inspector } from './inspector'
+import { MediaPool } from './media-pool'
 import { NodeGraph } from './node-graph'
 import { ProjectMenu } from './project-menu'
 import { Scopes } from './scopes'
@@ -81,39 +82,43 @@ export function Editor() {
           </div>
         </header>
 
-        <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
-          {/* Top: viewer left, node graph right */}
-          <ResizablePanel defaultSize="56%" minSize="25%">
-            <ResizablePanelGroup orientation="horizontal">
-              <ResizablePanel defaultSize="52%" minSize="30%">
-                <Viewer />
-              </ResizablePanel>
-              <ResizableHandle withHandle />
-              <ResizablePanel defaultSize="48%" minSize="25%">
-                <NodeGraph />
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </ResizablePanel>
+        <div className="flex min-h-0 flex-1">
+          {/* Left: the media "Space" — clips (each with its own graph) + stills */}
+          <MediaPool />
+          <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
+            {/* Top: viewer left, node graph right */}
+            <ResizablePanel defaultSize="56%" minSize="25%">
+              <ResizablePanelGroup orientation="horizontal">
+                <ResizablePanel defaultSize="52%" minSize="30%">
+                  <Viewer />
+                </ResizablePanel>
+                <ResizableHandle withHandle />
+                <ResizablePanel defaultSize="48%" minSize="25%">
+                  <NodeGraph />
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </ResizablePanel>
 
-          <ResizableHandle withHandle />
+            <ResizableHandle withHandle />
 
-          {/* Bottom: corrector / color wheels left, scopes pinned right */}
-          <ResizablePanel defaultSize="44%" minSize="20%">
-            <ResizablePanelGroup orientation="horizontal">
-              <ResizablePanel defaultSize="68%" minSize="35%">
-                <div className="h-full border-t border-border bg-card">
-                  <Inspector />
-                </div>
-              </ResizablePanel>
-              <ResizableHandle withHandle />
-              <ResizablePanel defaultSize="32%" minSize="20%">
-                <div className="h-full border-l border-t border-border bg-card">
-                  <Scopes />
-                </div>
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          </ResizablePanel>
-        </ResizablePanelGroup>
+            {/* Bottom: corrector / color wheels left, scopes pinned right */}
+            <ResizablePanel defaultSize="44%" minSize="20%">
+              <ResizablePanelGroup orientation="horizontal">
+                <ResizablePanel defaultSize="68%" minSize="35%">
+                  <div className="h-full border-t border-border bg-card">
+                    <Inspector />
+                  </div>
+                </ResizablePanel>
+                <ResizableHandle withHandle />
+                <ResizablePanel defaultSize="32%" minSize="20%">
+                  <div className="h-full border-l border-t border-border bg-card">
+                    <Scopes />
+                  </div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
       </div>
       <Toaster />
     </ReactFlowProvider>

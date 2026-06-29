@@ -27,6 +27,26 @@ export interface Still {
   label: string
 }
 
+/**
+ * A clip in the media pool. Each clip carries its **own** node graph, so
+ * switching clips swaps both the footage and its grade. The `file` is the
+ * runtime source reloaded into the viewer on activation; `graph`/`positions`
+ * are the saved structure (mirrors a project's stored graph).
+ */
+export interface Clip {
+  id: string
+  name: string
+  fps: number | null
+  /** Runtime source file, reloaded into the <video> when this clip is activated. */
+  file: File | null
+  /** Ungraded first-frame thumbnail for the bin (data URL), filled in lazily. */
+  thumbnail?: string
+  /** This clip's node graph — structure + values, no positions. */
+  graph: GraphTemplate
+  /** Node positions aligned to `graph.nodes`. */
+  positions: { x: number; y: number }[]
+}
+
 /** A loaded 3D LUT attached to a `lut` FX (out-of-band — not a scalar param). */
 export interface LoadedLut {
   /** Display name (the file name, sans extension, or the LUT's TITLE). */
@@ -63,9 +83,44 @@ export const BASE_FX_TYPE = 'color-correct'
 let nodeCounter = 0
 let edgeCounter = 0
 let fxCounter = 0
+let clipCounter = 0
 const nextId = (prefix: string) => `${prefix}-${++nodeCounter}`
 const edgeId = () => `e${++edgeCounter}`
 const fxId = () => `fx${++fxCounter}`
+const clipId = () => `clip-${++clipCounter}`
+
+/** Seconds → m:ss.ss, for a still's capture-time label. */
+function formatTime(t: number): string {
+  const m = Math.floor(t / 60)
+  const s = (t % 60).toFixed(2).padStart(5, '0')
+  return `${m}:${s}`
+}
+
+/** Grab the engine's current graded frame as a JPEG data URL (capped width). */
+async function grabStill(engine: Engine): Promise<string | null> {
+  const dims = engine.dimensions
+  if (!dims.width) return null
+  const w = Math.min(480, dims.width)
+  const h = Math.max(1, Math.round((dims.height / dims.width) * w))
+  const frame = await engine.sampleScopes(w, h)
+  if (!frame) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  const out = ctx.createImageData(w, h)
+  const bgra = frame.format === 'BGRA'
+  const d = frame.data
+  for (let i = 0; i < w * h * 4; i += 4) {
+    out.data[i] = d[bgra ? i + 2 : i] ?? 0
+    out.data[i + 1] = d[i + 1] ?? 0
+    out.data[i + 2] = d[bgra ? i : i + 2] ?? 0
+    out.data[i + 3] = 255
+  }
+  ctx.putImageData(out, 0, 0)
+  return canvas.toDataURL('image/jpeg', 0.85)
+}
 
 /** Most undo steps the history keeps before dropping the oldest. */
 const HISTORY_LIMIT = 100
@@ -151,6 +206,28 @@ function toTemplateNode(n: GradeNode): TemplateNode {
   return tn
 }
 
+/** Snapshot a live graph into a position-less template + aligned positions. */
+function templateOf(
+  nodes: GradeNode[],
+  edges: Edge[],
+): {
+  graph: GraphTemplate
+  positions: { x: number; y: number }[]
+} {
+  const index = new Map(nodes.map((n, i) => [n.id, i]))
+  return {
+    graph: {
+      nodes: nodes.map(toTemplateNode),
+      edges: edges.flatMap((e) => {
+        const a = index.get(e.source)
+        const b = index.get(e.target)
+        return a === undefined || b === undefined ? [] : [[a, b] as [number, number]]
+      }),
+    },
+    positions: nodes.map((n) => ({ x: n.position.x, y: n.position.y })),
+  }
+}
+
 interface EditorState {
   nodes: GradeNode[]
   edges: Edge[]
@@ -215,6 +292,20 @@ interface EditorState {
   addStill: (still: Omit<Still, 'id'>) => void
   removeStill: (id: string) => void
   setHoveredStill: (id: string | null) => void
+  /** Grab the engine's current graded frame into the stills bin. Returns false
+   *  when there's nothing to capture (no engine/frame yet). */
+  captureStill: () => Promise<boolean>
+
+  // Media pool: clips, each with its own node graph. The active clip's graph is
+  // the live document (nodes/edges); switching swaps both footage and grade.
+  clips: Clip[]
+  activeClipId: string | null
+  /** Add an imported clip to the pool and make it active (loads its footage). */
+  addClip: (file: File) => void
+  /** Switch to a clip — saves the current graph, restores the target's. */
+  selectClip: (id: string) => void
+  removeClip: (id: string) => void
+  setClipThumbnail: (id: string, thumbnail: string) => void
 
   toGraph: () => Graph
   structureKey: () => string
@@ -267,6 +358,8 @@ export const useEditor = create<EditorState>((set, get) => {
     future: [],
     stills: [],
     hoveredStillId: null,
+    clips: [],
+    activeClipId: null,
 
     // Drags and removals are undoable (one step per drag); pure selection and
     // dimension-measurement changes from React Flow are not.
@@ -455,7 +548,13 @@ export const useEditor = create<EditorState>((set, get) => {
     setEngine: (engine) => set({ engine }),
     setClipName: (clipName) => set({ clipName }),
     setPendingClip: (pendingClip) => set({ pendingClip }),
-    setClipFps: (clipFps) => set({ clipFps }),
+    setClipFps: (clipFps) =>
+      set((s) => ({
+        clipFps,
+        clips: s.activeClipId
+          ? s.clips.map((c) => (c.id === s.activeClipId ? { ...c, fps: clipFps } : c))
+          : s.clips,
+      })),
 
     togglePlay: () => {
       const v = get().video
@@ -497,15 +596,7 @@ export const useEditor = create<EditorState>((set, get) => {
     // Capture the current document as a position-less, LUT-less template.
     getTemplate: () => {
       const { nodes, edges } = get()
-      const index = new Map(nodes.map((n, i) => [n.id, i]))
-      return {
-        nodes: nodes.map(toTemplateNode),
-        edges: edges.flatMap((e) => {
-          const a = index.get(e.source)
-          const b = index.get(e.target)
-          return a === undefined || b === undefined ? [] : [[a, b] as [number, number]]
-        }),
-      }
+      return templateOf(nodes, edges).graph
     },
 
     // Rebuild the graph from a template — fresh ids. Without `positions` the
@@ -557,6 +648,95 @@ export const useEditor = create<EditorState>((set, get) => {
         hoveredStillId: s.hoveredStillId === id ? null : s.hoveredStillId,
       })),
     setHoveredStill: (id) => set({ hoveredStillId: id }),
+
+    captureStill: async () => {
+      const { engine, video, addStill } = get()
+      if (!engine) return false
+      const url = await grabStill(engine)
+      if (!url) return false
+      const time = video?.currentTime ?? 0
+      addStill({ url, time, label: formatTime(time) })
+      return true
+    },
+
+    // Save the live graph into the active clip before adding/switching, so each
+    // clip keeps its own grade. The first clip adopts the current starter graph;
+    // later clips begin from a fresh starter.
+    addClip: (file) => {
+      set((s) => {
+        const snapped = s.activeClipId
+          ? s.clips.map((c) =>
+              c.id === s.activeClipId ? { ...c, ...templateOf(s.nodes, s.edges) } : c,
+            )
+          : s.clips
+        const isFirst = s.clips.length === 0
+        const seed = isFirst ? templateOf(s.nodes, s.edges) : null
+        const fresh = isFirst ? null : starterGraph()
+        const id = clipId()
+        const clip: Clip = {
+          id,
+          name: file.name,
+          fps: null,
+          file,
+          graph: seed ? seed.graph : templateOf(fresh!.nodes, fresh!.edges).graph,
+          positions: seed ? seed.positions : templateOf(fresh!.nodes, fresh!.edges).positions,
+        }
+        const base = { clips: [...snapped, clip], activeClipId: id }
+        return fresh
+          ? {
+              ...base,
+              nodes: fresh.nodes,
+              edges: fresh.edges,
+              selectedId: fresh.selectedId,
+              activeFxId: null,
+            }
+          : base
+      })
+      get().setPendingClip(file)
+    },
+
+    selectClip: (id) => {
+      const s = get()
+      if (id === s.activeClipId) return
+      const target = s.clips.find((c) => c.id === id)
+      if (!target) return
+      set((st) => ({
+        clips: st.activeClipId
+          ? st.clips.map((c) =>
+              c.id === st.activeClipId ? { ...c, ...templateOf(st.nodes, st.edges) } : c,
+            )
+          : st.clips,
+        activeClipId: id,
+      }))
+      get().applyTemplate(target.graph, target.positions)
+      get().setClipName(target.name)
+      get().setClipFps(target.fps)
+      if (target.file) get().setPendingClip(target.file)
+    },
+
+    removeClip: (id) => {
+      const s = get()
+      const remaining = s.clips.filter((c) => c.id !== id)
+      if (s.activeClipId !== id) {
+        set({ clips: remaining })
+        return
+      }
+      const next = remaining[0]
+      set({ clips: remaining, activeClipId: next ? next.id : null })
+      if (next) {
+        get().applyTemplate(next.graph, next.positions)
+        get().setClipName(next.name)
+        get().setClipFps(next.fps)
+        if (next.file) get().setPendingClip(next.file)
+      } else {
+        // Pool emptied — keep the last frame on screen but reset name/fps.
+        get().setClipName(null)
+        get().setClipFps(null)
+      }
+    },
+
+    setClipThumbnail: (id, thumbnail) =>
+      set((s) => ({ clips: s.clips.map((c) => (c.id === id ? { ...c, thumbnail } : c)) })),
 
     toGraph: () => {
       const { nodes, edges } = get()
