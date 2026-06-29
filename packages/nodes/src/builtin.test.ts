@@ -20,6 +20,31 @@ describe('node registry', () => {
     }
   })
 
+  test('registers the mononodes-style DCTL FX', () => {
+    for (const t of [
+      'rgb-crosstalk',
+      'color-shift',
+      'color-shaper',
+      'hue-twist',
+      'rgb-split-tone',
+      'lab-adjust',
+      'clamp',
+      'middle-gray',
+      'clipping',
+      'isolator',
+      'grid',
+      'test-ramp',
+      'test-strip',
+      'stretch',
+      'border',
+    ]) {
+      const def = reg.get(t)
+      expect(def).toBeDefined()
+      expect(def?.fx).toBe(true)
+      expect(def?.kernel?.body).toBeTruthy()
+    }
+  })
+
   test('FX defs are flagged fx:true; the base corrector is not', () => {
     expect(reg.require('glow').fx).toBe(true)
     expect(reg.require('color-space').fx).toBe(true)

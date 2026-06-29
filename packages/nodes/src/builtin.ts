@@ -942,6 +942,905 @@ export const LUT_NODE: NodeDef = {
   },
 }
 
+// ---------------------------------------------------------------------------
+// mononodes-style DCTLs, reconstructed as native FX. Each is a self-contained
+// per-pixel kernel (a DCTL's `transform()` maps 1:1 onto our kernel envelope:
+// `color`, `coord`, `dims`, `src`, `P`). Warps/borders resample `src` within
+// the same frame, so output dimensions never change.
+// ---------------------------------------------------------------------------
+
+/** Shared RGB<->HSV helpers for the hue-based nodes (deduped per shader module). */
+const HSV_LIB = /* wgsl */ `
+  fn grade_rgb2hsv(c: vec3<f32>) -> vec3<f32> {
+    let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    let p = mix(vec4<f32>(c.bg, K.wz), vec4<f32>(c.gb, K.xy), step(c.b, c.g));
+    let q = mix(vec4<f32>(p.xyw, c.r), vec4<f32>(c.r, p.yzx), step(p.x, c.r));
+    let d = q.x - min(q.w, q.y);
+    let e = 1e-10;
+    return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+  }
+  fn grade_hsv2rgb(c: vec3<f32>) -> vec3<f32> {
+    let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
+  }
+`
+
+/**
+ * RGB Crosstalk / RGB Mixer — bleeds each channel into the others while keeping
+ * neutrals neutral: every output row is normalized so its weights sum to 1
+ * (the diagonal absorbs the off-diagonal mix). Constant total → grays unchanged.
+ */
+export const RGB_CROSSTALK_NODE: NodeDef = {
+  type: 'rgb-crosstalk',
+  label: 'RGB Crosstalk',
+  category: 'Color',
+  role: 'effect',
+  fx: true,
+  accent: '#ef4444',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    { key: 'r_g', label: 'Red ← Green', type: 'float', default: 0, min: -1, max: 1, step: 0.005 },
+    { key: 'r_b', label: 'Red ← Blue', type: 'float', default: 0, min: -1, max: 1, step: 0.005 },
+    { key: 'g_r', label: 'Green ← Red', type: 'float', default: 0, min: -1, max: 1, step: 0.005 },
+    { key: 'g_b', label: 'Green ← Blue', type: 'float', default: 0, min: -1, max: 1, step: 0.005 },
+    { key: 'b_r', label: 'Blue ← Red', type: 'float', default: 0, min: -1, max: 1, step: 0.005 },
+    { key: 'b_g', label: 'Blue ← Green', type: 'float', default: 0, min: -1, max: 1, step: 0.005 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      // Diagonal = 1 - (off-diagonal mix), so each row sums to 1 and neutrals stay put.
+      let rr = 1.0 - P.r_g - P.r_b;
+      let gg = 1.0 - P.g_r - P.g_b;
+      let bb = 1.0 - P.b_r - P.b_g;
+      let mixed = vec3<f32>(
+        rr * color.r + P.r_g * color.g + P.r_b * color.b,
+        P.g_r * color.r + gg * color.g + P.g_b * color.b,
+        P.b_r * color.r + P.b_g * color.g + bb * color.b,
+      );
+      color = mix(color, mixed, P.amount);
+    `,
+  },
+}
+
+/**
+ * Color Shift — broad look-dev control over the six primaries (R/Y/G/C/M/Y):
+ * per-hue vibrancy (saturation) and density (luminance weight), interpolated
+ * around the wheel. Weighted by saturation so neutrals are untouched.
+ */
+export const COLOR_SHIFT_NODE: NodeDef = {
+  type: 'color-shift',
+  label: 'Color Shift',
+  category: 'Color',
+  role: 'effect',
+  fx: true,
+  accent: '#8b5cf6',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    ...CHROMA_HUES.flatMap((h): ParamDef[] => [
+      {
+        key: `vib_${h.key}`,
+        label: `${h.label} Vibrancy`,
+        group: 'Vibrancy',
+        type: 'float',
+        default: 0,
+        min: -1,
+        max: 1,
+        step: 0.01,
+      },
+      {
+        key: `den_${h.key}`,
+        label: `${h.label} Density`,
+        group: 'Density',
+        type: 'float',
+        default: 0,
+        min: -1,
+        max: 1,
+        step: 0.01,
+      },
+    ]),
+  ],
+  kernel: {
+    lib: HSV_LIB,
+    body: /* wgsl */ `
+      var hsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+      var vib = array<f32, 6>(P.vib_r, P.vib_y, P.vib_g, P.vib_c, P.vib_b, P.vib_m);
+      var den = array<f32, 6>(P.den_r, P.den_y, P.den_g, P.den_c, P.den_b, P.den_m);
+      let h6 = fract(hsv.x) * 6.0;
+      let si = i32(floor(h6)) % 6;
+      let sj = (si + 1) % 6;
+      let sf = fract(h6);
+      let v = mix(vib[si], vib[sj], sf);
+      let d = mix(den[si], den[sj], sf);
+      let w = hsv.y; // saturation weight: grays unaffected
+      hsv.y = clamp(hsv.y * (1.0 + v * w), 0.0, 1.0);
+      hsv.z = clamp(hsv.z * (1.0 - d * w * 0.5), 0.0, 4.0);
+      color = mix(color, grade_hsv2rgb(hsv), P.amount);
+    `,
+  },
+}
+
+/**
+ * Color Shaper — a hue-range qualifier with a luminance window. Selects a band
+ * of hue (centre + width) intersected with a luma range (shadows/mids/lights),
+ * then shifts hue / saturation / density only inside that selection.
+ */
+export const COLOR_SHAPER_NODE: NodeDef = {
+  type: 'color-shaper',
+  label: 'Color Shaper',
+  category: 'Color',
+  role: 'effect',
+  fx: true,
+  accent: '#a855f7',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    {
+      key: 'center_hue',
+      label: 'Hue',
+      group: 'Select',
+      type: 'float',
+      default: 0,
+      min: 0,
+      max: 1,
+      step: 0.005,
+    },
+    {
+      key: 'hue_width',
+      label: 'Hue Range',
+      group: 'Select',
+      type: 'float',
+      default: 0.12,
+      min: 0.01,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'luma_lo',
+      label: 'Luma Low',
+      group: 'Select',
+      type: 'float',
+      default: 0,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: 'luma_hi',
+      label: 'Luma High',
+      group: 'Select',
+      type: 'float',
+      default: 1,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: 'd_hue',
+      label: 'Hue Shift',
+      group: 'Adjust',
+      type: 'float',
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'd_sat',
+      label: 'Saturation',
+      group: 'Adjust',
+      type: 'float',
+      default: 0,
+      min: -1,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: 'd_density',
+      label: 'Density',
+      group: 'Adjust',
+      type: 'float',
+      default: 0,
+      min: -1,
+      max: 1,
+      step: 0.01,
+    },
+  ],
+  kernel: {
+    lib: HSV_LIB,
+    body: /* wgsl */ `
+      var hsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+      let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+      // wrapped hue distance to centre -> soft mask of width hue_width.
+      var hd = abs(hsv.x - P.center_hue);
+      hd = min(hd, 1.0 - hd);
+      let hueMask = 1.0 - smoothstep(P.hue_width * 0.5, P.hue_width, hd);
+      let lumaMask = smoothstep(P.luma_lo - 0.001, P.luma_lo + 0.08, luma)
+        * (1.0 - smoothstep(P.luma_hi - 0.08, P.luma_hi + 0.001, luma));
+      let m = hueMask * lumaMask * P.amount;
+      hsv.x = fract(hsv.x + P.d_hue * m);
+      hsv.y = clamp(hsv.y * (1.0 + P.d_sat * m), 0.0, 1.0);
+      hsv.z = clamp(hsv.z * (1.0 - P.d_density * m * 0.5), 0.0, 4.0);
+      color = grade_hsv2rgb(hsv);
+    `,
+  },
+}
+
+/**
+ * Hue Twist & Bend — rotates hue toward neighbouring colours, modulated by
+ * brightness: the twist scales with how far a pixel's luma sits from a pivot,
+ * so highlights and shadows of the same hue bend by different amounts.
+ */
+export const HUE_TWIST_NODE: NodeDef = {
+  type: 'hue-twist',
+  label: 'Hue Twist & Bend',
+  category: 'Color',
+  role: 'effect',
+  fx: true,
+  accent: '#d946ef',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    { key: 'twist', label: 'Twist', type: 'float', default: 0, min: -1, max: 1, step: 0.01 },
+    {
+      key: 'bend',
+      label: 'Bend (by luma)',
+      type: 'float',
+      default: 0,
+      min: -2,
+      max: 2,
+      step: 0.01,
+    },
+    { key: 'pivot', label: 'Pivot', type: 'float', default: 0.5, min: 0, max: 1, step: 0.01 },
+  ],
+  kernel: {
+    lib: HSV_LIB,
+    body: /* wgsl */ `
+      var hsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+      let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+      let dHue = P.twist * (1.0 + P.bend * (luma - P.pivot)) * 0.1; // ±1 -> ±36°
+      hsv.x = fract(hsv.x + dHue * hsv.y * P.amount); // weight by sat: grays unmoved
+      color = grade_hsv2rgb(hsv);
+    `,
+  },
+}
+
+/**
+ * RGB Split Tone — pushes the R/G/B channels independently in shadows vs.
+ * highlights, crossing over with an adjustable slope. The slope steepens the
+ * luma weighting toward the highlights for film-like tonality.
+ */
+export const RGB_SPLIT_TONE_NODE: NodeDef = {
+  type: 'rgb-split-tone',
+  label: 'RGB Split Tone',
+  category: 'Color',
+  role: 'effect',
+  fx: true,
+  accent: '#0d9488',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    { key: 'slope', label: 'Slope', type: 'float', default: 1, min: 0.2, max: 4, step: 0.01 },
+    {
+      key: 'lo_r',
+      label: 'Shadow R',
+      group: 'Shadows',
+      type: 'float',
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'lo_g',
+      label: 'Shadow G',
+      group: 'Shadows',
+      type: 'float',
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'lo_b',
+      label: 'Shadow B',
+      group: 'Shadows',
+      type: 'float',
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'hi_r',
+      label: 'Highlight R',
+      group: 'Highlights',
+      type: 'float',
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'hi_g',
+      label: 'Highlight G',
+      group: 'Highlights',
+      type: 'float',
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'hi_b',
+      label: 'Highlight B',
+      group: 'Highlights',
+      type: 'float',
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.005,
+    },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let luma = clamp(dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+      let w = pow(luma, max(P.slope, 0.01));
+      let lo = vec3<f32>(P.lo_r, P.lo_g, P.lo_b);
+      let hi = vec3<f32>(P.hi_r, P.hi_g, P.hi_b);
+      color = color + mix(lo, hi, w) * P.amount;
+    `,
+  },
+}
+
+/**
+ * Lab Adjust — the Look/Lab/Print "Lab" stage. Converts to CIELAB (D65),
+ * adjusts Lightness and the a/b opponent axes plus overall chroma, then maps
+ * back. Decouples luminance from colour the way a Lab pass on a print does.
+ */
+export const LAB_ADJUST_NODE: NodeDef = {
+  type: 'lab-adjust',
+  label: 'Lab Adjust',
+  category: 'Color',
+  role: 'effect',
+  fx: true,
+  accent: '#6366f1',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    {
+      key: 'lightness',
+      label: 'Lightness',
+      type: 'float',
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'green_red',
+      label: 'Green ↔ Red (a*)',
+      type: 'float',
+      default: 0,
+      min: -1,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: 'blue_yellow',
+      label: 'Blue ↔ Yellow (b*)',
+      type: 'float',
+      default: 0,
+      min: -1,
+      max: 1,
+      step: 0.01,
+    },
+    { key: 'chroma', label: 'Chroma', type: 'float', default: 1, min: 0, max: 2, step: 0.01 },
+  ],
+  kernel: {
+    lib: /* wgsl */ `
+      fn grade_srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+        let lo = c / 12.92;
+        let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+        return select(hi, lo, c <= vec3<f32>(0.04045));
+      }
+      fn grade_linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+        let v = max(c, vec3<f32>(0.0));
+        let lo = v * 12.92;
+        let hi = 1.055 * pow(v, vec3<f32>(1.0 / 2.4)) - 0.055;
+        return select(hi, lo, v <= vec3<f32>(0.0031308));
+      }
+      const GRADE_RGB_TO_XYZ: mat3x3<f32> = mat3x3<f32>(
+        0.4124564, 0.2126729, 0.0193339,
+        0.3575761, 0.7151522, 0.1191920,
+        0.1804375, 0.0721750, 0.9503041,
+      );
+      const GRADE_XYZ_TO_RGB: mat3x3<f32> = mat3x3<f32>(
+        3.2404542, -0.9692660, 0.0556434,
+        -1.5371385, 1.8760108, -0.2040259,
+        -0.4985314, 0.0415560, 1.0572252,
+      );
+      fn grade_f_lab(t: f32) -> f32 {
+        let d = 6.0 / 29.0;
+        if (t > d * d * d) { return pow(t, 1.0 / 3.0); }
+        return t / (3.0 * d * d) + 4.0 / 29.0;
+      }
+      fn grade_finv_lab(t: f32) -> f32 {
+        let d = 6.0 / 29.0;
+        if (t > d) { return t * t * t; }
+        return 3.0 * d * d * (t - 4.0 / 29.0);
+      }
+    `,
+    body: /* wgsl */ `
+      let wn = vec3<f32>(0.95047, 1.0, 1.08883); // D65 white
+      let lin = grade_srgb_to_linear(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)));
+      let xyz = GRADE_RGB_TO_XYZ * lin;
+      let f = vec3<f32>(grade_f_lab(xyz.x / wn.x), grade_f_lab(xyz.y / wn.y), grade_f_lab(xyz.z / wn.z));
+      var L = 116.0 * f.y - 16.0;
+      var a = 500.0 * (f.x - f.y);
+      var b = 200.0 * (f.y - f.z);
+      L = clamp(L + P.lightness * 100.0, 0.0, 100.0);
+      a = (a + P.green_red * 60.0) * P.chroma;
+      b = (b + P.blue_yellow * 60.0) * P.chroma;
+      let fy = (L + 16.0) / 116.0;
+      let xyz2 = vec3<f32>(
+        wn.x * grade_finv_lab(fy + a / 500.0),
+        wn.y * grade_finv_lab(fy),
+        wn.z * grade_finv_lab(fy - b / 200.0),
+      );
+      let outc = grade_linear_to_srgb(GRADE_XYZ_TO_RGB * xyz2);
+      color = mix(color, outc, P.amount);
+    `,
+  },
+}
+
+/**
+ * Clamp — limits out-of-range values to [low, high]. With a non-zero knee the
+ * approach to each bound is a soft tanh roll-off instead of a hard clip, so
+ * extended-range colours compress rather than flatten abruptly.
+ */
+export const CLAMP_NODE: NodeDef = {
+  type: 'clamp',
+  label: 'Clamp',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#71717a',
+  params: [
+    { key: 'low', label: 'Low', type: 'float', default: 0, min: -1, max: 1, step: 0.005 },
+    { key: 'high', label: 'High', type: 'float', default: 1, min: 0, max: 2, step: 0.005 },
+    { key: 'knee', label: 'Soft Knee', type: 'float', default: 0, min: 0, max: 0.5, step: 0.005 },
+  ],
+  kernel: {
+    lib: /* wgsl */ `
+      fn grade_sclamp(x: f32, lo: f32, hi: f32, knee: f32) -> f32 {
+        let k = max(knee, 1e-4);
+        var y = x;
+        if (y > hi - k) { y = (hi - k) + k * tanh((y - (hi - k)) / k); }
+        if (y < lo + k) { y = (lo + k) - k * tanh(((lo + k) - y) / k); }
+        return y;
+      }
+    `,
+    body: /* wgsl */ `
+      color = vec3<f32>(
+        grade_sclamp(color.r, P.low, P.high, P.knee),
+        grade_sclamp(color.g, P.low, P.high, P.knee),
+        grade_sclamp(color.b, P.low, P.high, P.knee),
+      );
+    `,
+  },
+}
+
+/**
+ * Middle Gray — anchors exposure and contrast around a mid-gray pivot (0.18 by
+ * default). Exposure scales in stops; contrast fans the image out in log2 space
+ * about the pivot, so mid-gray stays put while it stretches.
+ */
+export const MIDDLE_GRAY_NODE: NodeDef = {
+  type: 'middle-gray',
+  label: 'Middle Gray',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#9ca3af',
+  params: [
+    {
+      key: 'pivot',
+      label: 'Mid-Gray',
+      type: 'float',
+      default: 0.18,
+      min: 0.05,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'exposure',
+      label: 'Exposure (stops)',
+      type: 'float',
+      default: 0,
+      min: -3,
+      max: 3,
+      step: 0.01,
+    },
+    { key: 'contrast', label: 'Contrast', type: 'float', default: 1, min: 0, max: 2, step: 0.01 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let pv = max(P.pivot, 1e-4);
+      var c = max(color, vec3<f32>(0.0)) * exp2(P.exposure);
+      let lg = log2(max(c, vec3<f32>(1e-5)) / pv);
+      color = pv * exp2(lg * P.contrast);
+    `,
+  },
+}
+
+/**
+ * Clipping — a diagnostic false-colour overlay. Pixels whose brightest channel
+ * reaches `high` are flagged red (highlight clip); pixels whose darkest channel
+ * falls below `low` are flagged blue (shadow crush). `opacity` dials the marks.
+ */
+export const CLIPPING_NODE: NodeDef = {
+  type: 'clipping',
+  label: 'Clipping',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#dc2626',
+  params: [
+    {
+      key: 'low',
+      label: 'Shadow Threshold',
+      type: 'float',
+      default: 0.02,
+      min: 0,
+      max: 0.2,
+      step: 0.002,
+    },
+    {
+      key: 'high',
+      label: 'Highlight Threshold',
+      type: 'float',
+      default: 0.98,
+      min: 0.8,
+      max: 1,
+      step: 0.002,
+    },
+    { key: 'opacity', label: 'Opacity', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let mx = max(max(color.r, color.g), color.b);
+      let mn = min(min(color.r, color.g), color.b);
+      var c = color;
+      if (mx >= P.high) { c = mix(c, vec3<f32>(1.0, 0.0, 0.0), P.opacity); }
+      if (mn <= P.low) { c = mix(c, vec3<f32>(0.0, 0.4, 1.0), P.opacity); }
+      color = c;
+    `,
+  },
+}
+
+/**
+ * Isolator — keeps "pure" (saturated) colours and desaturates the rest, with an
+ * optional restriction to the bright or dark regions of the frame. Useful for
+ * spotting which hues carry the image's colour.
+ */
+export const ISOLATOR_NODE: NodeDef = {
+  type: 'isolator',
+  label: 'Isolator',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#65a30d',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    { key: 'min_sat', label: 'Purity', type: 'float', default: 0.4, min: 0, max: 1, step: 0.01 },
+    { key: 'desat', label: 'Desaturate', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    {
+      key: 'region',
+      label: 'Region',
+      type: 'enum',
+      default: 'all',
+      options: [
+        { value: 'all', label: 'Everywhere' },
+        { value: 'dark', label: 'Dark Regions' },
+        { value: 'bright', label: 'Bright Regions' },
+      ],
+    },
+  ],
+  kernel: {
+    lib: HSV_LIB,
+    body: /* wgsl */ `
+      let original = color;
+      let hsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+      let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+      let pure = smoothstep(P.min_sat - 0.05, P.min_sat + 0.05, hsv.y);
+      var regionW = 1.0;
+      if (P.region > 1.5) { regionW = smoothstep(0.45, 0.8, luma); }
+      else if (P.region > 0.5) { regionW = 1.0 - smoothstep(0.2, 0.55, luma); }
+      let keep = pure * regionW;
+      let desatd = mix(original, vec3<f32>(luma), P.desat);
+      let isolated = mix(desatd, original, keep);
+      color = mix(original, isolated, P.amount);
+    `,
+  },
+}
+
+/**
+ * Grid — a procedural alignment overlay (rule-of-thirds by default). Draws
+ * `divisions` evenly-spaced lines plus an optional centre cross, generated from
+ * pixel coordinates — no PNG overlay required.
+ */
+export const GRID_NODE: NodeDef = {
+  type: 'grid',
+  label: 'Grid',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#3f3f46',
+  params: [
+    { key: 'divisions', label: 'Divisions', type: 'float', default: 3, min: 1, max: 16, step: 1 },
+    {
+      key: 'thickness',
+      label: 'Thickness (px)',
+      type: 'float',
+      default: 1,
+      min: 0.5,
+      max: 4,
+      step: 0.1,
+    },
+    { key: 'opacity', label: 'Opacity', type: 'float', default: 0.6, min: 0, max: 1, step: 0.01 },
+    { key: 'bright', label: 'Brightness', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    { key: 'show_cross', label: 'Centre Cross', type: 'bool', default: true },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let fdims = vec2<f32>(dims);
+      let px = vec2<f32>(coord);
+      let cells = max(floor(P.divisions + 0.5), 1.0);
+      let cell = fdims / cells;
+      let m = px - floor(px / cell) * cell;
+      let dl = min(min(m.x, cell.x - m.x), min(m.y, cell.y - m.y));
+      var onLine = select(0.0, 1.0, dl < P.thickness);
+      if (P.show_cross > 0.5) {
+        let dc = min(abs(px.x - fdims.x * 0.5), abs(px.y - fdims.y * 0.5));
+        onLine = max(onLine, select(0.0, 1.0, dc < P.thickness));
+      }
+      color = mix(color, vec3<f32>(P.bright), onLine * P.opacity);
+    `,
+  },
+}
+
+/**
+ * Gradient Test Ramps — generates precise ramps (grey H/V, hue sweep, or split
+ * R/G/B bands) for evaluating LUTs, transforms and contrast. `steps` quantizes
+ * the ramp into bands; `amount` blends it over the incoming image.
+ */
+export const TEST_RAMP_NODE: NodeDef = {
+  type: 'test-ramp',
+  label: 'Test Ramp',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#0891b2',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+    {
+      key: 'steps',
+      label: 'Steps (0 = smooth)',
+      type: 'float',
+      default: 0,
+      min: 0,
+      max: 32,
+      step: 1,
+    },
+    {
+      key: 'kind',
+      label: 'Ramp',
+      type: 'enum',
+      default: 'gray-h',
+      options: [
+        { value: 'gray-h', label: 'Grey (Horizontal)' },
+        { value: 'gray-v', label: 'Grey (Vertical)' },
+        { value: 'hue', label: 'Hue Sweep' },
+        { value: 'rgb', label: 'R/G/B Bands' },
+      ],
+    },
+  ],
+  kernel: {
+    lib: HSV_LIB,
+    body: /* wgsl */ `
+      let uv = vec2<f32>(coord) / vec2<f32>(dims);
+      var coordT = uv.x;
+      if (P.kind > 0.5 && P.kind < 1.5) { coordT = 1.0 - uv.y; }
+      var t = coordT;
+      if (P.steps >= 1.0) {
+        let n = floor(P.steps + 0.5);
+        t = clamp(floor(coordT * n) / max(n - 1.0, 1.0), 0.0, 1.0);
+      }
+      var ramp = vec3<f32>(t);
+      if (P.kind > 1.5 && P.kind < 2.5) {
+        ramp = grade_hsv2rgb(vec3<f32>(fract(t), 1.0, 1.0));
+      } else if (P.kind > 2.5) {
+        let seg = floor(uv.y * 3.0);
+        if (seg < 0.5) { ramp = vec3<f32>(t, 0.0, 0.0); }
+        else if (seg < 1.5) { ramp = vec3<f32>(0.0, t, 0.0); }
+        else { ramp = vec3<f32>(0.0, 0.0, t); }
+      }
+      color = mix(color, ramp, P.amount);
+    `,
+  },
+}
+
+/**
+ * Test Strip — splits the frame into vertical columns, each previewing a
+ * different amount of one variable (exposure, contrast or saturation) centred
+ * on the middle strip, so several grades can be judged side by side.
+ */
+export const TEST_STRIP_NODE: NodeDef = {
+  type: 'test-strip',
+  label: 'Test Strip',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#0ea5e9',
+  params: [
+    { key: 'columns', label: 'Strips', type: 'float', default: 3, min: 2, max: 6, step: 1 },
+    { key: 'range', label: 'Range', type: 'float', default: 0.5, min: 0, max: 1, step: 0.01 },
+    {
+      key: 'pivot',
+      label: 'Pivot',
+      type: 'float',
+      default: 0.18,
+      min: 0.05,
+      max: 0.5,
+      step: 0.005,
+    },
+    {
+      key: 'variable',
+      label: 'Variable',
+      type: 'enum',
+      default: 'exposure',
+      options: [
+        { value: 'exposure', label: 'Exposure' },
+        { value: 'contrast', label: 'Contrast' },
+        { value: 'saturation', label: 'Saturation' },
+      ],
+    },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let uv = vec2<f32>(coord) / vec2<f32>(dims);
+      let cols = max(floor(P.columns + 0.5), 1.0);
+      let ix = floor(clamp(uv.x, 0.0, 0.999) * cols);
+      let amt = ((ix - (cols - 1.0) * 0.5) / max((cols - 1.0) * 0.5, 1.0)) * P.range;
+      if (P.variable < 0.5) {
+        color = color * exp2(amt * 2.0);
+      } else if (P.variable < 1.5) {
+        let pv = max(P.pivot, 1e-4);
+        let lg = log2(max(color, vec3<f32>(1e-5)) / pv);
+        color = pv * exp2(lg * (1.0 + amt));
+      } else {
+        let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        color = mix(vec3<f32>(luma), color, 1.0 + amt);
+      }
+    `,
+  },
+}
+
+/**
+ * Stretch — a localized directional warp. Resamples the frame along `angle`,
+ * displacing pixels by `strength` within a Gaussian falloff of `distance`
+ * around the pivot. Output stays the same size (it gathers from `src`).
+ */
+export const STRETCH_NODE: NodeDef = {
+  type: 'stretch',
+  label: 'Stretch',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#f97316',
+  params: [
+    {
+      key: 'strength',
+      label: 'Strength',
+      type: 'float',
+      default: 0.3,
+      min: -1,
+      max: 1,
+      step: 0.01,
+    },
+    { key: 'pos_x', label: 'Position X', type: 'float', default: 0.5, min: 0, max: 1, step: 0.01 },
+    { key: 'pos_y', label: 'Position Y', type: 'float', default: 0.5, min: 0, max: 1, step: 0.01 },
+    {
+      key: 'distance',
+      label: 'Distance',
+      type: 'float',
+      default: 0.3,
+      min: 0.05,
+      max: 1,
+      step: 0.01,
+    },
+    { key: 'angle', label: 'Angle', type: 'float', default: 0, min: 0, max: 6.2832, step: 0.01 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let fdims = vec2<f32>(dims);
+      let uv = vec2<f32>(coord) / fdims;
+      let dir = vec2<f32>(cos(P.angle), sin(P.angle));
+      let along = dot(uv - vec2<f32>(P.pos_x, P.pos_y), dir);
+      let fall = exp(-(along * along) / (2.0 * P.distance * P.distance + 1e-4));
+      let suv = clamp(uv - dir * P.strength * fall * 0.3, vec2<f32>(0.0), vec2<f32>(1.0));
+      let sc = clamp(vec2<i32>(suv * fdims), vec2<i32>(0), vec2<i32>(dims) - vec2<i32>(1));
+      color = textureLoad(src, sc, 0).rgb;
+    `,
+  },
+}
+
+/**
+ * Border — shrinks the image into the frame and fills the surround with a flat
+ * colour. The interior is resampled from `src` (so output size is unchanged);
+ * everything outside the inset takes the background colour.
+ */
+export const BORDER_NODE: NodeDef = {
+  type: 'border',
+  label: 'Border',
+  category: 'Utility',
+  role: 'effect',
+  fx: true,
+  accent: '#52525b',
+  params: [
+    {
+      key: 'size',
+      label: 'Border Size',
+      type: 'float',
+      default: 0.06,
+      min: 0,
+      max: 0.45,
+      step: 0.005,
+    },
+    {
+      key: 'bg_r',
+      label: 'Background R',
+      group: 'Background',
+      type: 'float',
+      default: 0,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: 'bg_g',
+      label: 'Background G',
+      group: 'Background',
+      type: 'float',
+      default: 0,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: 'bg_b',
+      label: 'Background B',
+      group: 'Background',
+      type: 'float',
+      default: 0,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let fdims = vec2<f32>(dims);
+      let uv = vec2<f32>(coord) / fdims;
+      let s = clamp(P.size, 0.0, 0.49);
+      if (uv.x < s || uv.y < s || uv.x > 1.0 - s || uv.y > 1.0 - s) {
+        color = vec3<f32>(P.bg_r, P.bg_g, P.bg_b);
+      } else {
+        let ruv = (uv - vec2<f32>(s)) / max(1.0 - 2.0 * s, 1e-4);
+        let sc = clamp(vec2<i32>(ruv * fdims), vec2<i32>(0), vec2<i32>(dims) - vec2<i32>(1));
+        color = textureLoad(src, sc, 0).rgb;
+      }
+    `,
+  },
+}
+
 export const BUILTIN_NODES: NodeDef[] = [
   INPUT_NODE,
   COLOR_SPACE_NODE,
@@ -957,6 +1856,22 @@ export const BUILTIN_NODES: NodeDef[] = [
   VIGNETTE_NODE,
   GATE_WEAVE_NODE,
   FILM_BREATH_NODE,
+  // mononodes-style DCTLs, reconstructed as native FX.
+  RGB_CROSSTALK_NODE,
+  COLOR_SHIFT_NODE,
+  COLOR_SHAPER_NODE,
+  HUE_TWIST_NODE,
+  RGB_SPLIT_TONE_NODE,
+  LAB_ADJUST_NODE,
+  CLAMP_NODE,
+  MIDDLE_GRAY_NODE,
+  CLIPPING_NODE,
+  ISOLATOR_NODE,
+  GRID_NODE,
+  TEST_RAMP_NODE,
+  TEST_STRIP_NODE,
+  STRETCH_NODE,
+  BORDER_NODE,
   OUTPUT_NODE,
 ]
 
