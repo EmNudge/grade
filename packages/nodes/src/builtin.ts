@@ -23,10 +23,21 @@ export const OUTPUT_NODE: NodeDef = {
 }
 
 /**
- * Color Space Transform: camera log/gamut -> Rec.709.
- * Decodes the source log curve, maps its gamut -> Rec.709 primaries, then
- * encodes for display. DJI D-Log -> Rec.709 is the default. `amount` dials the
+ * Color Space Transform -> Rec.709, modeled on Resolve's CST so its controls map
+ * 1:1. Pipeline: decode Input Gamma -> rotate Input Color Space into Rec.709 ->
+ * Gamut Mapping -> Tone Mapping -> encode Output Gamma. `amount` dials the
  * transform in/out for A/B comparison.
+ *
+ * Input Gamma is INDEPENDENT of Input Color Space (the key fix): the curve the
+ * footage was shot with (D-Log, S-Log3, a plain Gamma 2.4, ...) is decoded
+ * separately from the gamut rotation. Decoding a clip as D-Log when it isn't
+ * expands it into a huge scene-linear range and reads as wildly over-exposed —
+ * the classic "doesn't match Resolve" symptom. Match your Resolve CST's Input
+ * Gamma / Input Color Space and the result matches too.
+ *
+ * Defaults mirror a Resolve CST with Tone/Gamut Mapping = None: a true 1:1 of
+ * "D-Gamut / Gamma 2.4 -> Rec.709 / Gamma 2.4", which leaves neutrals untouched
+ * and only rotates the gamut.
  */
 export const COLOR_SPACE_NODE: NodeDef = {
   type: 'color-space',
@@ -37,27 +48,69 @@ export const COLOR_SPACE_NODE: NodeDef = {
   accent: '#a855f7',
   params: [
     {
-      key: 'source',
-      label: 'Source',
+      key: 'inSpace',
+      label: 'Input Color Space',
       type: 'enum',
-      // Default = DJI D-Log -> Rec.709.
-      default: 'dji-dlog',
+      default: 'dgamut',
       options: [
-        { value: 'dji-dlog', label: 'DJI D-Log / D-Log M' },
-        { value: 'sony-slog3', label: 'Sony S-Log3 / S-Gamut3.Cine' },
-        { value: 'arri-logc3', label: 'ARRI LogC3 (EI 800) / AWG3' },
-        { value: 'rec709', label: 'Rec.709 (passthrough)' },
+        { value: 'dgamut', label: 'DJI D-Gamut' },
+        { value: 'sgamut3cine', label: 'Sony S-Gamut3.Cine' },
+        { value: 'awg3', label: 'ARRI Wide Gamut 3' },
+        { value: 'rec709', label: 'Rec.709' },
       ],
     },
     {
-      key: 'display',
-      label: 'Output Encode',
+      key: 'inGamma',
+      label: 'Input Gamma',
       type: 'enum',
+      // Gamma 2.4 (not a log decode) matches the common DJI workflow and is the
+      // safe near-passthrough default; switch to D-Log to decode the log curve.
       default: 'gamma24',
       options: [
-        { value: 'gamma24', label: 'Rec.709 (Gamma 2.4)' },
-        { value: 'gamma22', label: 'Rec.709 (Gamma 2.2)' },
-        { value: 'bt709', label: 'Rec.709 (BT.709 OETF)' },
+        { value: 'dlog', label: 'DJI D-Log / D-Log M' },
+        { value: 'slog3', label: 'Sony S-Log3' },
+        { value: 'logc3', label: 'ARRI LogC3 (EI 800)' },
+        { value: 'gamma24', label: 'Gamma 2.4' },
+        { value: 'gamma22', label: 'Gamma 2.2' },
+        { value: 'srgb', label: 'sRGB' },
+        { value: 'bt709', label: 'BT.709 (OETF)' },
+        { value: 'linear', label: 'Linear' },
+      ],
+    },
+    {
+      key: 'outGamma',
+      label: 'Output Gamma',
+      type: 'enum',
+      // Output color space is always Rec.709.
+      default: 'gamma24',
+      options: [
+        { value: 'gamma24', label: 'Gamma 2.4' },
+        { value: 'gamma22', label: 'Gamma 2.2' },
+        { value: 'srgb', label: 'sRGB' },
+        { value: 'bt709', label: 'BT.709 (OETF)' },
+      ],
+    },
+    {
+      key: 'tonemap',
+      label: 'Tone Mapping',
+      type: 'enum',
+      // None = Resolve default. Filmic/Reinhard add highlight rolloff for true
+      // log decodes that would otherwise clip.
+      default: 'none',
+      options: [
+        { value: 'none', label: 'None' },
+        { value: 'filmic', label: 'Filmic (highlight rolloff)' },
+        { value: 'reinhard', label: 'Reinhard (soft)' },
+      ],
+    },
+    {
+      key: 'gamutMap',
+      label: 'Gamut Mapping',
+      type: 'enum',
+      default: 'none',
+      options: [
+        { value: 'none', label: 'None' },
+        { value: 'fit', label: 'Fit (desaturate to gamut)' },
       ],
     },
     {
@@ -72,14 +125,16 @@ export const COLOR_SPACE_NODE: NodeDef = {
   ],
   kernel: {
     lib: COLOR_WGSL_LIB,
-    // P.source: 0 DJI, 1 S-Log3, 2 LogC3, 3 passthrough.
-    // P.display: 0 gamma2.4, 1 gamma2.2, 2 BT.709 OETF.
+    // P.inSpace: 0 D-Gamut, 1 S-Gamut3.Cine, 2 AWG3, 3 Rec.709.
+    // P.inGamma: 0 D-Log, 1 S-Log3, 2 LogC3, 3 g2.4, 4 g2.2, 5 sRGB, 6 BT.709, 7 linear.
+    // P.outGamma: 0 g2.4, 1 g2.2, 2 sRGB, 3 BT.709 OETF.
+    // P.tonemap: 0 none, 1 filmic, 2 Reinhard.   P.gamutMap: 0 none, 1 fit.
     body: /* wgsl */ `
-      var graded = color;
-      if (P.source < 2.5) {
-        let lin = grade_source_to_rec709_linear(color, P.source);
-        graded = grade_encode_display(lin, P.display);
-      }
+      let lin = grade_decode_gamma(color, P.inGamma);
+      let rec = grade_gamut_to_rec709(lin, P.inSpace);
+      let mapped = grade_gamut_map(rec, P.gamutMap);
+      let disp = grade_tonemap(mapped, P.tonemap);
+      let graded = grade_encode_display(disp, P.outGamma);
       color = mix(color, graded, P.amount);
     `,
   },
