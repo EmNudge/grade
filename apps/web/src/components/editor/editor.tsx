@@ -6,6 +6,7 @@ import { CommandPalette } from './command-palette'
 import { ExportDialog } from './export-dialog'
 import { Inspector } from './inspector'
 import { NodeGraph } from './node-graph'
+import { ProjectMenu } from './project-menu'
 import { Scopes } from './scopes'
 import { TemplatesMenu } from './templates-menu'
 import { Viewer } from './viewer'
@@ -58,7 +59,8 @@ export function Editor() {
               <Redo2 className="size-4" />
             </Button>
           </div>
-          <div className="ml-1">
+          <div className="ml-1 flex items-center gap-1">
+            <ProjectMenu />
             <TemplatesMenu />
           </div>
           <span className="ml-auto hidden text-[11px] text-muted-foreground md:inline">

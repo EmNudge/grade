@@ -3,10 +3,18 @@ import { toast } from 'sonner'
 import {
   type ExportFormat,
   type ExportQuality,
+  exportFilename,
   exportGradedVideo,
   isExportSupported,
 } from './export'
+import { pickSaveFile, writeSaveFile } from './save-file'
 import { useEditor } from './store'
+
+/** Native save-dialog accept map per container format. */
+const ACCEPT: Record<ExportFormat, { description: string; accept: Record<string, string[]> }> = {
+  mp4: { description: 'MP4 video', accept: { 'video/mp4': ['.mp4'] } },
+  webm: { description: 'WebM video', accept: { 'video/webm': ['.webm'] } },
+}
 
 export type ExportPhase = 'idle' | 'exporting' | 'done' | 'error'
 
@@ -45,6 +53,15 @@ export function useExport(): ExportState {
       return
     }
 
+    // Grab the save target first, while we still have the click's user
+    // activation — the picker can't open after the multi-second encode. A null
+    // result means the user dismissed the dialog, so there's nothing to export.
+    const target = await pickSaveFile({
+      suggestedName: exportFilename(settings.format, clipName ?? undefined),
+      ...ACCEPT[settings.format],
+    })
+    if (!target) return
+
     const ac = new AbortController()
     abortRef.current = ac
     setPhase('exporting')
@@ -56,23 +73,37 @@ export function useExport(): ExportState {
     engine.stop()
     video.pause()
 
+    // With a real file handle we stream the muxer output straight to disk; the
+    // download fallback (no handle) still buffers a Blob to save at the end.
+    let writable: FileSystemWritableFileStream | null = null
     try {
+      writable = target.handle ? await target.handle.createWritable() : null
       const result = await exportGradedVideo(engine, video, {
         format: settings.format,
         quality: settings.quality,
         fps: settings.fps,
         audio: settings.audio,
         ...(clipName ? { name: clipName } : {}),
+        ...(writable ? { writable } : {}),
         signal: ac.signal,
         onProgress: (done, total) => setProgress(done / total),
       })
-      downloadBlob(result.blob, result.filename)
+      // Streaming already wrote and closed the file; otherwise save the Blob.
+      if (!writable) await writeSaveFile(target, result.blob as Blob)
       setPhase('done')
       const audioNote = settings.audio && !result.hasAudio ? ' · no audio track found' : ''
-      toast.success(`Exported ${result.filename}`, {
+      toast.success(`Exported ${target.filename}`, {
         description: `${result.width}×${result.height} · ${result.frames} frames${audioNote}`,
       })
     } catch (err) {
+      // Discard the half-written file so we never leave a corrupt output behind.
+      if (writable) {
+        try {
+          await writable.abort()
+        } catch {
+          // already closed/aborted — nothing to undo
+        }
+      }
       if (err instanceof DOMException && err.name === 'AbortError') {
         setPhase('idle')
       } else {
@@ -96,16 +127,4 @@ export function useExport(): ExportState {
   const cancel = useCallback(() => abortRef.current?.abort(), [])
 
   return { phase, progress, error, supported: isExportSupported(), run, cancel }
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  // Revoke after the click has had a chance to start the download.
-  setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
