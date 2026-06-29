@@ -78,6 +78,38 @@ fn grade_apply_lut(c_in: vec3<f32>) -> vec3<f32> {
 }
 `
 
+/**
+ * Per-frame globals available to every kernel as `G`, plus a small noise
+ * toolkit. `G.time` is the source clip's playback time in seconds (advances
+ * while playing, holds while paused — so grain stays static on a frozen frame
+ * but crawls during playback, like real film). `G.frame` is a monotonic render
+ * counter. The hash/value-noise helpers drive grain and any future temporal
+ * artefact (gate weave, film breath). Injected into every shader so kernels can
+ * reach them without declaring their own bindings.
+ */
+const GLOBALS_WGSL = /* wgsl */ `
+struct GradeGlobals { time: f32, frame: f32, _g2: f32, _g3: f32 };
+@group(0) @binding(4) var<uniform> G: GradeGlobals;
+
+fn grade_hash21(p: vec2<f32>) -> f32 {
+  var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+  p3 += dot(p3, p3.yzx + vec3<f32>(33.33));
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// Smooth value noise in 0..1. seed decorrelates layers (channels, frames).
+fn grade_valnoise(p: vec2<f32>, seed: f32) -> f32 {
+  let i = floor(p) + vec2<f32>(seed);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  let a = grade_hash21(i + vec2<f32>(0.0, 0.0));
+  let b = grade_hash21(i + vec2<f32>(1.0, 0.0));
+  let c = grade_hash21(i + vec2<f32>(0.0, 1.0));
+  let d = grade_hash21(i + vec2<f32>(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+`
+
 /** Generate the WGSL params struct + a single compute shader for an effect node. */
 export function generateWgsl(def: NodeDef): string {
   const kernel = def.kernel
@@ -90,6 +122,7 @@ export function generateWgsl(def: NodeDef): string {
   for (let i = used; i % 4 !== 0; i++) fields.push(`  _pad${i}: f32,`)
 
   return /* wgsl */ `
+${GLOBALS_WGSL}
 ${kernel.lib ?? ''}
 
 struct Params {

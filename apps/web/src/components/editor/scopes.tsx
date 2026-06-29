@@ -3,12 +3,14 @@ import type { Engine } from '@grade/engine'
 import { useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
 
-type ScopeMode = 'histogram' | 'waveform' | 'vectorscope'
+type ScopeMode = 'histogram' | 'waveform' | 'vectorscope' | 'falsecolor' | 'clipping'
 
 const MODES: { id: ScopeMode; label: string }[] = [
   { id: 'histogram', label: 'Histogram' },
   { id: 'waveform', label: 'Parade' },
   { id: 'vectorscope', label: 'Vectorscope' },
+  { id: 'falsecolor', label: 'False Color' },
+  { id: 'clipping', label: 'Clipping' },
 ]
 
 // Downsampled source resolution we analyse the graded frame at.
@@ -98,7 +100,9 @@ export function Scopes() {
       const m = modeRef.current
       if (m === 'histogram') drawHistogram(octx, frame)
       else if (m === 'waveform') drawParade(octx, frame)
-      else drawVectorscope(octx, frame)
+      else if (m === 'vectorscope') drawVectorscope(octx, frame)
+      else if (m === 'falsecolor') drawFalseColor(octx, frame)
+      else drawClipping(octx, frame)
     }
     raf = requestAnimationFrame(draw)
 
@@ -322,6 +326,84 @@ function drawVectorscope(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray)
   ctx.lineTo(cx, cy + OH * 0.45)
   ctx.stroke()
   renderIntensity(ctx, acc, [180, 255, 180], false)
+}
+
+const REC709_LUMA = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+/**
+ * Exposure false-color overlay (ARRI/Resolve-style): recolours the frame by
+ * luminance into IRE bands so you can read exposure at a glance — purple for
+ * crushed blacks, blue/cyan shadows, green low-mids, a grey marker around 18%
+ * mid-grey, yellow/orange highlights, red for clipping.
+ */
+function falseColor(l: number): [number, number, number] {
+  if (l <= 0.02) return [70, 0, 100] // crushed black
+  if (l >= 0.4 && l <= 0.44) return [150, 150, 150] // 18% mid-grey reference
+  if (l < 0.08) return [40, 60, 205] // deep shadow
+  if (l < 0.2) return [40, 170, 205] // shadow
+  if (l < 0.4) return [70, 185, 75] // low mid
+  if (l < 0.62) return [205, 205, 80] // mid
+  if (l < 0.78) return [235, 180, 60] // high mid
+  if (l < 0.92) return [235, 120, 55] // highlight
+  if (l < 0.985) return [235, 75, 75] // near clip
+  return [255, 40, 40] // clipped
+}
+
+function drawFalseColor(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray) {
+  const img = ctx.createImageData(OW, OH)
+  const px = img.data
+  for (let y = 0; y < OH; y++) {
+    const sy = Math.min(SH - 1, ((y / OH) * SH) | 0)
+    for (let x = 0; x < OW; x++) {
+      const sx = Math.min(SW - 1, ((x / OW) * SW) | 0)
+      const si = (sy * SW + sx) * 4
+      const l = REC709_LUMA(data[si] ?? 0, data[si + 1] ?? 0, data[si + 2] ?? 0) / 255
+      const [cr, cg, cb] = falseColor(l)
+      const oi = (y * OW + x) * 4
+      px[oi] = cr
+      px[oi + 1] = cg
+      px[oi + 2] = cb
+      px[oi + 3] = 255
+    }
+  }
+  ctx.putImageData(img, 0, 0)
+}
+
+/**
+ * Clipping overlay (zebra): the frame in mono, with any channel at/above 254
+ * flagged red (blown highlights) and fully-black pixels flagged blue (crushed
+ * shadows) — Dehancer-style clipping indication.
+ */
+function drawClipping(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray) {
+  const img = ctx.createImageData(OW, OH)
+  const px = img.data
+  for (let y = 0; y < OH; y++) {
+    const sy = Math.min(SH - 1, ((y / OH) * SH) | 0)
+    for (let x = 0; x < OW; x++) {
+      const sx = Math.min(SW - 1, ((x / OW) * SW) | 0)
+      const si = (sy * SW + sx) * 4
+      const r = data[si] ?? 0
+      const g = data[si + 1] ?? 0
+      const b = data[si + 2] ?? 0
+      const oi = (y * OW + x) * 4
+      if (r >= 254 || g >= 254 || b >= 254) {
+        px[oi] = 235
+        px[oi + 1] = 45
+        px[oi + 2] = 45
+      } else if (r <= 1 && g <= 1 && b <= 1) {
+        px[oi] = 60
+        px[oi + 1] = 120
+        px[oi + 2] = 255
+      } else {
+        const mono = REC709_LUMA(r, g, b) * 0.7
+        px[oi] = mono
+        px[oi + 1] = mono
+        px[oi + 2] = mono
+      }
+      px[oi + 3] = 255
+    }
+  }
+  ctx.putImageData(img, 0, 0)
 }
 
 /** Map an accumulation buffer to a glowing monochrome image and blit it. */

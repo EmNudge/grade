@@ -322,9 +322,35 @@ export const COLOR_CORRECT_NODE: NodeDef = {
 }
 
 /**
- * Glow — blooms the highlights. Bright-passes the image above a threshold,
- * box-blurs it over a radius, and adds it back. Samples neighbours from the
- * source texture (the kernel has `src`/`coord`/`dims` in scope).
+ * Shared blur helper for the optical FX (Glow, Blur, Sharpen, Halation). A
+ * 7×7 Gaussian-weighted tap of the source texture, with the taps spread by
+ * `radius`. Gaussian weights (rather than a flat box) give a smooth, round
+ * falloff even when the taps are spread wide for a large bloom — the old 5×5
+ * box left a blocky, aliased halo at high radius. `src` is the module-scope
+ * source binding the compiler injects for every kernel.
+ */
+const BLUR_LIB = /* wgsl */ `
+fn grade_gauss_rgb(c: vec2<i32>, dims: vec2<u32>, radius: f32) -> vec3<f32> {
+  let maxc = vec2<i32>(dims) - vec2<i32>(1);
+  var acc = vec3<f32>(0.0);
+  var wsum = 0.0;
+  for (var dy = -3; dy <= 3; dy = dy + 1) {
+    for (var dx = -3; dx <= 3; dx = dx + 1) {
+      let w = exp(-f32(dx * dx + dy * dy) / 6.0);
+      let o = vec2<i32>(i32(round(f32(dx) * radius)), i32(round(f32(dy) * radius)));
+      let sc = clamp(c + o, vec2<i32>(0, 0), maxc);
+      acc += textureLoad(src, sc, 0).rgb * w;
+      wsum += w;
+    }
+  }
+  return acc / wsum;
+}
+`
+
+/**
+ * Glow — blooms the highlights. Bright-passes a Gaussian-blurred copy above a
+ * threshold and adds it back. Samples neighbours from the source texture (the
+ * kernel has `src`/`coord`/`dims` in scope).
  */
 export const GLOW_NODE: NodeDef = {
   type: 'glow',
@@ -355,24 +381,17 @@ export const GLOW_NODE: NodeDef = {
     { key: 'radius', label: 'Radius', type: 'float', default: 2, min: 0.5, max: 6, step: 0.1 },
   ],
   kernel: {
+    lib: BLUR_LIB,
     body: /* wgsl */ `
-      let maxc = vec2<i32>(vec2<i32>(dims) - vec2<i32>(1));
-      var glow = vec3<f32>(0.0);
-      for (var dy = -2; dy <= 2; dy = dy + 1) {
-        for (var dx = -2; dx <= 2; dx = dx + 1) {
-          let o = vec2<i32>(i32(f32(dx) * P.radius), i32(f32(dy) * P.radius));
-          let sc = clamp(coord + o, vec2<i32>(0, 0), maxc);
-          let s = textureLoad(src, sc, 0).rgb;
-          glow += max(s - vec3<f32>(P.threshold), vec3<f32>(0.0));
-        }
-      }
-      color = color + (glow / 25.0) * P.intensity;
+      let blurred = grade_gauss_rgb(coord, dims, P.radius);
+      let glow = max(blurred - vec3<f32>(P.threshold), vec3<f32>(0.0));
+      color = color + glow * P.intensity;
     `,
   },
 }
 
 /**
- * Blur — a simple 5×5 box blur. Averages neighbouring texels over a radius and
+ * Blur — a 7×7 Gaussian blur. Averages neighbouring texels over a radius and
  * mixes the result back with `amount`. Samples from the source texture (the
  * kernel has `src`/`coord`/`dims` in scope).
  */
@@ -388,23 +407,15 @@ export const BLUR_NODE: NodeDef = {
     { key: 'radius', label: 'Radius', type: 'float', default: 2, min: 0.5, max: 8, step: 0.1 },
   ],
   kernel: {
+    lib: BLUR_LIB,
     body: /* wgsl */ `
-      let maxc = vec2<i32>(vec2<i32>(dims) - vec2<i32>(1));
-      var sum = vec3<f32>(0.0);
-      for (var dy = -2; dy <= 2; dy = dy + 1) {
-        for (var dx = -2; dx <= 2; dx = dx + 1) {
-          let o = vec2<i32>(i32(f32(dx) * P.radius), i32(f32(dy) * P.radius));
-          let sc = clamp(coord + o, vec2<i32>(0, 0), maxc);
-          sum += textureLoad(src, sc, 0).rgb;
-        }
-      }
-      color = mix(color, sum / 25.0, P.amount);
+      color = mix(color, grade_gauss_rgb(coord, dims, P.radius), P.amount);
     `,
   },
 }
 
 /**
- * Sharpen — unsharp mask. Subtracts a box-blurred copy from the image to
+ * Sharpen — unsharp mask. Subtracts a Gaussian-blurred copy from the image to
  * recover high-frequency detail, scaled by `amount`. Samples neighbours from
  * the source texture (the kernel has `src`/`coord`/`dims` in scope).
  */
@@ -420,17 +431,9 @@ export const SHARPEN_NODE: NodeDef = {
     { key: 'radius', label: 'Radius', type: 'float', default: 1.5, min: 0.5, max: 4, step: 0.1 },
   ],
   kernel: {
+    lib: BLUR_LIB,
     body: /* wgsl */ `
-      let maxc = vec2<i32>(vec2<i32>(dims) - vec2<i32>(1));
-      var sum = vec3<f32>(0.0);
-      for (var dy = -2; dy <= 2; dy = dy + 1) {
-        for (var dx = -2; dx <= 2; dx = dx + 1) {
-          let o = vec2<i32>(i32(f32(dx) * P.radius), i32(f32(dy) * P.radius));
-          let sc = clamp(coord + o, vec2<i32>(0, 0), maxc);
-          sum += textureLoad(src, sc, 0).rgb;
-        }
-      }
-      let blurred = sum / 25.0;
+      let blurred = grade_gauss_rgb(coord, dims, P.radius);
       color = color + (color - blurred) * P.amount;
     `,
   },
@@ -474,19 +477,13 @@ export const HALATION_NODE: NodeDef = {
     { key: 'tint', label: 'Tint', type: 'float', default: 0.45, min: 0, max: 1, step: 0.01 },
   ],
   kernel: {
+    lib: BLUR_LIB,
     body: /* wgsl */ `
-      let maxc = vec2<i32>(vec2<i32>(dims) - vec2<i32>(1));
-      var h = 0.0;
-      for (var dy = -2; dy <= 2; dy = dy + 1) {
-        for (var dx = -2; dx <= 2; dx = dx + 1) {
-          let o = vec2<i32>(i32(f32(dx) * P.size), i32(f32(dy) * P.size));
-          let sc = clamp(coord + o, vec2<i32>(0, 0), maxc);
-          let s = textureLoad(src, sc, 0).rgb;
-          let luma = dot(s, vec3<f32>(0.2126, 0.7152, 0.0722));
-          h += max(luma - P.threshold, 0.0);
-        }
-      }
-      h = (h / 25.0) * P.intensity;
+      // Blur the source, then bright-pass its luma: a wide, soft Gaussian halo
+      // around highlights rather than the old blocky box.
+      let blurred = grade_gauss_rgb(coord, dims, P.size);
+      let luma = dot(blurred, vec3<f32>(0.2126, 0.7152, 0.0722));
+      let h = max(luma - P.threshold, 0.0) * P.intensity;
       let tint = mix(vec3<f32>(1.0, 0.18, 0.06), vec3<f32>(1.0, 0.5, 0.2), P.tint);
       let halo = clamp(h, 0.0, 1.0) * tint;
       // screen blend so highlights bloom softly rather than clip.
@@ -559,6 +556,15 @@ export const FILM_LOOK_NODE: NodeDef = {
     },
     { key: 'warmth', label: 'Warmth', type: 'float', default: 0.1, min: -1, max: 1, step: 0.01 },
     {
+      key: 'bleach',
+      label: 'Bleach Bypass',
+      type: 'float',
+      default: 0,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    {
       key: 'blackLift',
       label: 'Black Lift',
       type: 'float',
@@ -606,6 +612,13 @@ export const FILM_LOOK_NODE: NodeDef = {
       let highTint = vec3<f32>(0.12, 0.04, -0.06);
       c = c + P.splitTone * mix(shadowTint, highTint, smoothstep(0.0, 1.0, luma));
       c = c + vec3<f32>(P.warmth * 0.08, 0.0, -P.warmth * 0.08);
+
+      // 4b. bleach bypass (silver retention): desaturate hard and steepen
+      //     contrast, blended in by amount — the harsh, gritty skip-bleach look.
+      let bleachLuma = dot(c, luma3);
+      var bleached = mix(vec3<f32>(bleachLuma), c, 0.15);
+      bleached = clamp((bleached - vec3<f32>(0.5)) * 1.4 + vec3<f32>(0.5), vec3<f32>(0.0), vec3<f32>(1.0));
+      c = mix(c, bleached, P.bleach);
 
       // 5. film-density black lift (blacks never reach 0).
       c = c + P.blackLift * (vec3<f32>(1.0) - c);
@@ -691,6 +704,218 @@ export const SPLIT_TONE_NODE: NodeDef = {
 }
 
 /**
+ * Film Grain — analytic film grain rebuilt per pixel (not an overlaid plate).
+ * Smooth value noise sampled at `size`-scaled coordinates so grain clumps to a
+ * chosen size, weighted independently into shadows / midtones / highlights (real
+ * grain peaks in the mids and is quietest in clean highlights). `chroma` mixes
+ * from monochrome silver grain toward per-channel colour grain. Animated off
+ * `G.time`, so it crawls during playback but freezes on a paused/stepped frame
+ * and is deterministic on export.
+ */
+export const GRAIN_NODE: NodeDef = {
+  type: 'grain',
+  label: 'Film Grain',
+  category: 'FX',
+  role: 'effect',
+  fx: true,
+  accent: '#9ca3af',
+  params: [
+    {
+      key: 'intensity',
+      label: 'Intensity',
+      type: 'float',
+      default: 0.5,
+      min: 0,
+      max: 2,
+      step: 0.01,
+    },
+    { key: 'size', label: 'Size', type: 'float', default: 1.5, min: 0.25, max: 6, step: 0.05 },
+    { key: 'chroma', label: 'Chroma', type: 'float', default: 0, min: 0, max: 1, step: 0.01 },
+    { key: 'shadows', label: 'Shadows', type: 'float', default: 0.6, min: 0, max: 2, step: 0.01 },
+    { key: 'midtones', label: 'Midtones', type: 'float', default: 1, min: 0, max: 2, step: 0.01 },
+    {
+      key: 'highlights',
+      label: 'Highlights',
+      type: 'float',
+      default: 0.5,
+      min: 0,
+      max: 2,
+      step: 0.01,
+    },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let luma3 = vec3<f32>(0.2126, 0.7152, 0.0722);
+      let luma = clamp(dot(color, luma3), 0.0, 1.0);
+      // Overlapping tonal masks: shadows fade out by mid grey, highlights fade
+      // in past it, midtones are whatever's left (peaks around 0.5).
+      let wS = 1.0 - smoothstep(0.0, 0.5, luma);
+      let wH = smoothstep(0.5, 1.0, luma);
+      let wM = max(1.0 - wS - wH, 0.0);
+      let weight = P.shadows * wS + P.midtones * wM + P.highlights * wH;
+      let amp = P.intensity * weight * 0.5;
+
+      // Per-frame jitter reshuffles the noise lattice each rendered frame.
+      let jx = fract(sin(G.time * 12.9898) * 43758.5453) * 64.0;
+      let jy = fract(sin(G.time * 78.2330) * 43758.5453) * 64.0;
+      let gp = vec2<f32>(coord) / max(P.size, 0.25) + vec2<f32>(jx, jy);
+
+      let nl = grade_valnoise(gp, 0.0) - 0.5;
+      let nr = grade_valnoise(gp, 17.0) - 0.5;
+      let ng = grade_valnoise(gp, 53.0) - 0.5;
+      let nb = grade_valnoise(gp, 91.0) - 0.5;
+      let grain = mix(vec3<f32>(nl), vec3<f32>(nr, ng, nb), P.chroma) * amp;
+      color = color + grain;
+    `,
+  },
+}
+
+/**
+ * Vignette — film-style exposure falloff toward the frame edges. `size` sets
+ * where the darkening begins (as a fraction of the half-diagonal), `softness`
+ * its feather, and `roundness` blends between a frame-shaped ellipse (0) and a
+ * true circle (1). A negative `amount` brightens the edges instead.
+ */
+export const VIGNETTE_NODE: NodeDef = {
+  type: 'vignette',
+  label: 'Vignette',
+  category: 'FX',
+  role: 'effect',
+  fx: true,
+  accent: '#475569',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 0.4, min: -1, max: 1, step: 0.01 },
+    { key: 'size', label: 'Size', type: 'float', default: 0.6, min: 0, max: 1.5, step: 0.01 },
+    {
+      key: 'softness',
+      label: 'Softness',
+      type: 'float',
+      default: 0.4,
+      min: 0.01,
+      max: 1,
+      step: 0.01,
+    },
+    { key: 'roundness', label: 'Roundness', type: 'float', default: 1, min: 0, max: 1, step: 0.01 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let res = vec2<f32>(dims);
+      let uv = (vec2<f32>(coord) + vec2<f32>(0.5)) / res - vec2<f32>(0.5);
+      let aspect = res.x / max(res.y, 1.0);
+      // roundness 0 -> ellipse matching the frame, 1 -> circular (aspect-corrected).
+      let p = vec2<f32>(uv.x * mix(1.0, aspect, P.roundness), uv.y);
+      let dist = length(p) * 2.0;
+      let fall = smoothstep(P.size, P.size + max(P.softness, 1e-3), dist);
+      color = color * (1.0 - fall * P.amount);
+    `,
+  },
+}
+
+/**
+ * Gate Weave — the small mechanical wander of the film strip in the camera/
+ * projector gate: the whole frame drifts by a sub-pixel offset that varies
+ * smoothly over time. Driven by low-frequency value noise on `G.time` (so it's
+ * static on a paused frame and deterministic on export), and bilinearly
+ * resampled from the source for smooth sub-pixel motion. `amount` is the peak
+ * offset in pixels, `speed` the wander rate, and `vertical` biases the motion
+ * toward the up/down weave that dominates real gate movement.
+ */
+export const GATE_WEAVE_NODE: NodeDef = {
+  type: 'gate-weave',
+  label: 'Gate Weave',
+  category: 'FX',
+  role: 'effect',
+  fx: true,
+  accent: '#7c3aed',
+  params: [
+    { key: 'amount', label: 'Amount', type: 'float', default: 1.5, min: 0, max: 8, step: 0.1 },
+    { key: 'speed', label: 'Speed', type: 'float', default: 2, min: 0.25, max: 8, step: 0.05 },
+    {
+      key: 'vertical',
+      label: 'Vertical Bias',
+      type: 'float',
+      default: 0.6,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let t = G.time * P.speed;
+      // Low-frequency drift in x and y (decorrelated via the noise seed).
+      let ox = (grade_valnoise(vec2<f32>(t, 0.0), 3.0) - 0.5) * 2.0 * P.amount * (1.0 - 0.5 * P.vertical);
+      let oy = (grade_valnoise(vec2<f32>(0.0, t), 11.0) - 0.5) * 2.0 * P.amount * (0.5 + 0.5 * P.vertical);
+
+      // Bilinear resample of the source at the shifted position for smooth
+      // sub-pixel motion (a plain textureLoad would snap to whole pixels).
+      let maxc = vec2<i32>(dims) - vec2<i32>(1);
+      let pos = vec2<f32>(coord) + vec2<f32>(ox, oy);
+      let base = floor(pos);
+      let f = pos - base;
+      let b = vec2<i32>(base);
+      let c00 = textureLoad(src, clamp(b, vec2<i32>(0, 0), maxc), 0).rgb;
+      let c10 = textureLoad(src, clamp(b + vec2<i32>(1, 0), vec2<i32>(0, 0), maxc), 0).rgb;
+      let c01 = textureLoad(src, clamp(b + vec2<i32>(0, 1), vec2<i32>(0, 0), maxc), 0).rgb;
+      let c11 = textureLoad(src, clamp(b + vec2<i32>(1, 1), vec2<i32>(0, 0), maxc), 0).rgb;
+      color = mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+    `,
+  },
+}
+
+/**
+ * Film Breath — the frame-to-frame fluctuation of analog film: exposure
+ * pumping, slight contrast variation, and a faint warm/cool colour drift, all
+ * uniform across the frame and wandering over time. Each component is driven by
+ * its own low-frequency noise on `G.time`, so the look "breathes" during
+ * playback yet holds still on a paused frame.
+ */
+export const FILM_BREATH_NODE: NodeDef = {
+  type: 'film-breath',
+  label: 'Film Breath',
+  category: 'FX',
+  role: 'effect',
+  fx: true,
+  accent: '#b45309',
+  params: [
+    {
+      key: 'exposure',
+      label: 'Exposure',
+      type: 'float',
+      default: 0.15,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: 'contrast',
+      label: 'Contrast',
+      type: 'float',
+      default: 0.1,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    { key: 'color', label: 'Color', type: 'float', default: 0.1, min: 0, max: 1, step: 0.01 },
+    { key: 'speed', label: 'Speed', type: 'float', default: 4, min: 0.25, max: 12, step: 0.05 },
+  ],
+  kernel: {
+    body: /* wgsl */ `
+      let t = G.time * P.speed;
+      // Independent low-frequency wanders, centred on zero.
+      let dExp = grade_valnoise(vec2<f32>(t, 0.0), 5.0) - 0.5;
+      let dCon = grade_valnoise(vec2<f32>(t, 0.0), 23.0) - 0.5;
+      let dCol = grade_valnoise(vec2<f32>(t, 0.0), 47.0) - 0.5;
+
+      // Exposure pump (multiplicative), contrast about mid grey, warm/cool drift.
+      color = color * (1.0 + dExp * P.exposure);
+      color = (color - vec3<f32>(0.5)) * (1.0 + dCon * P.contrast) + vec3<f32>(0.5);
+      color = color + vec3<f32>(dCol * P.color * 0.05, 0.0, -dCol * P.color * 0.05);
+    `,
+  },
+}
+
+/**
  * LUT — applies a 3D colour lookup table loaded from a `.cube` file (the format
  * Resolve / Adobe / film-emulation packs ship). The actual lattice is uploaded
  * per node instance via `Engine.setNodeLut`; here the kernel just samples it
@@ -728,6 +953,10 @@ export const BUILTIN_NODES: NodeDef[] = [
   HALATION_NODE,
   SPLIT_TONE_NODE,
   FILM_LOOK_NODE,
+  GRAIN_NODE,
+  VIGNETTE_NODE,
+  GATE_WEAVE_NODE,
+  FILM_BREATH_NODE,
   OUTPUT_NODE,
 ]
 

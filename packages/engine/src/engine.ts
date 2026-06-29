@@ -99,6 +99,13 @@ export class Engine {
   private lutTextures = new Map<string, GPUTexture>()
   private defaultLut: GPUTexture
 
+  // Per-frame globals (binding 4 on every pass): time in seconds + a render
+  // counter. Reused buffer + scratch array so the per-frame write doesn't
+  // allocate.
+  private globalUniform: GPUBuffer
+  private globalData = new Float32Array(4)
+  private frameCounter = 0
+
   private raf = 0
   private running = false
 
@@ -130,6 +137,8 @@ export class Engine {
         storageTexture: { access: 'write-only', format: WORKING_FORMAT },
       },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      // Per-frame globals (time/frame), shared by every pass.
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ]
     this.bindLayout = device.createBindGroupLayout({ entries: baseEntries })
     this.lutBindLayout = device.createBindGroupLayout({
@@ -142,6 +151,12 @@ export class Engine {
           texture: { sampleType: 'unfilterable-float', viewDimension: '3d' },
         },
       ],
+    })
+
+    // Per-frame globals buffer (one vec4: time, frame, pad, pad).
+    this.globalUniform = device.createBuffer({
+      size: this.globalData.byteLength,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
 
     // 2³ identity LUT — the unit-cube corners, so an un-loaded LUT pass is a
@@ -488,6 +503,14 @@ export class Engine {
       return null
     }
 
+    // Refresh per-frame globals. Time is the clip's own playback position, so
+    // grain/temporal effects are deterministic on export (seek → fixed time)
+    // and static on a paused frame, yet crawl during playback.
+    this.frameCounter += 1
+    this.globalData[0] = Number.isFinite(video.currentTime) ? video.currentTime : 0
+    this.globalData[1] = this.frameCounter
+    this.device.queue.writeBuffer(this.globalUniform, 0, this.globalData)
+
     // Run the effect chain, ping-ponging A/B. `final` is the output texture.
     let srcView: GPUTextureView = this.sourceTex.createView()
     let final: GPUTexture = this.sourceTex
@@ -506,6 +529,7 @@ export class Engine {
         { binding: 0, resource: srcView },
         { binding: 1, resource: dstTex.createView() },
         { binding: 2, resource: { buffer: pass.uniform } },
+        { binding: 4, resource: { buffer: this.globalUniform } },
       ]
       if (pass.def.lut) {
         const tex = this.lutTextures.get(pass.nodeId) ?? this.defaultLut
@@ -587,6 +611,7 @@ export class Engine {
     this.histBuf?.destroy()
     for (const p of this.passes) p.uniform.destroy()
     this.passes = []
+    this.globalUniform.destroy()
     for (const tex of this.lutTextures.values()) tex.destroy()
     this.lutTextures.clear()
     this.defaultLut.destroy()
