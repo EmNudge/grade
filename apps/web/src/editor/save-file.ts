@@ -119,14 +119,41 @@ export async function pickOpenFile(opts: OpenPickOptions): Promise<OpenTarget | 
       // Otherwise fall through to the input fallback.
     }
   }
-  return pickViaInput(opts)
+  return pickViaInput(opts, false)
+}
+
+/**
+ * Like `pickOpenFile`, but allows selecting several files at once. Returns one
+ * target per chosen file (with handles when the native picker is available), or
+ * an empty array if the user cancels. Must be called within a user gesture.
+ */
+export async function pickOpenFiles(opts: OpenPickOptions): Promise<OpenTarget[]> {
+  if (supportsNativeOpen()) {
+    try {
+      const handles = await window.showOpenFilePicker!({
+        types: [{ description: opts.description ?? 'File', accept: opts.accept }],
+        multiple: true,
+      })
+      return Promise.all(handles.map(async (handle) => ({ handle, file: await handle.getFile() })))
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return []
+      // Otherwise fall through to the input fallback.
+    }
+  }
+  return pickViaInput(opts, true)
 }
 
 /** Fallback open path for browsers without the File System Access API. */
-function pickViaInput(opts: OpenPickOptions): Promise<OpenTarget | null> {
+function pickViaInput(opts: OpenPickOptions, multiple: false): Promise<OpenTarget | null>
+function pickViaInput(opts: OpenPickOptions, multiple: true): Promise<OpenTarget[]>
+function pickViaInput(
+  opts: OpenPickOptions,
+  multiple = false,
+): Promise<OpenTarget | null | OpenTarget[]> {
   return new Promise((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
+    input.multiple = multiple
     // Build an accept string from both extensions and MIME types.
     input.accept = [...Object.values(opts.accept).flat(), ...Object.keys(opts.accept)].join(',')
     input.style.display = 'none'
@@ -134,9 +161,13 @@ function pickViaInput(opts: OpenPickOptions): Promise<OpenTarget | null> {
     input.addEventListener(
       'change',
       () => {
-        const file = input.files?.[0] ?? null
+        const files = Array.from(input.files ?? [])
         input.remove()
-        resolve(file ? { handle: null, file } : null)
+        if (multiple) {
+          resolve(files.map((file) => ({ handle: null, file })))
+        } else {
+          resolve(files[0] ? { handle: null, file: files[0] } : null)
+        }
       },
       { once: true },
     )

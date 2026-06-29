@@ -12,6 +12,7 @@ const MAX = 5
 // x spans 0..VBW, y spans 0..VBH; normalised point coords (0..1) map onto these.
 const VBW = 200
 const VBH = 100
+// Tone curves: x = input level, y = output level (identity by default).
 const CHANNELS = [
   { id: 'm', label: 'Y', color: '#e5e5e5' },
   { id: 'r', label: 'R', color: '#ff5a5a' },
@@ -19,7 +20,20 @@ const CHANNELS = [
   { id: 'b', label: 'B', color: '#6aa8ff' },
 ] as const
 
-type Ch = (typeof CHANNELS)[number]['id']
+// Hue curves (DaVinci-style): x = pixel hue, y centred at 0.5 = neutral. They
+// rotate hue, scale saturation, or scale luminance per source hue.
+const HUE_CURVES = [
+  { id: 'hh', label: 'Hue→Hue', color: '#e5e5e5' },
+  { id: 'hs', label: 'Hue→Sat', color: '#e5e5e5' },
+  { id: 'hl', label: 'Hue→Lum', color: '#e5e5e5' },
+] as const
+
+const ALL_CHANNELS = [...CHANNELS, ...HUE_CURVES]
+type Ch = (typeof ALL_CHANNELS)[number]['id']
+const isHueCh = (ch: Ch): boolean => ch === 'hh' || ch === 'hs' || ch === 'hl'
+
+// Rainbow stops for the hue-curve x-axis backdrop (red→…→red, one turn).
+const HUE_STOPS = ['#ff5a5a', '#ffd25a', '#5aff7d', '#5affff', '#5a7dff', '#d25aff', '#ff5a5a']
 interface Pt {
   x: number
   y: number
@@ -115,7 +129,8 @@ export function CurveEditor({
   const [ch, setCh] = useState<Ch>('m')
   const svgRef = useRef<SVGSVGElement>(null)
   const dragIndex = useRef<number | null>(null)
-  const color = CHANNELS.find((c) => c.id === ch)!.color
+  const color = ALL_CHANNELS.find((c) => c.id === ch)!.color
+  const isHue = isHueCh(ch)
   const smooth = Boolean(values['crv_smooth'])
 
   // Upstream signal distribution, drawn behind the grid. Sampled off the engine
@@ -163,10 +178,13 @@ export function CurveEditor({
       .map((v, i) => `${((i / 255) * VBW).toFixed(2)},${(VBH - v * (VBH * 0.9)).toFixed(2)}`)
       .join(' ')} ${VBW},${VBH}`
 
+  // Neutral default per channel: tone curves are an identity ramp (0,0)->(1,1);
+  // hue curves sit flat at y=0.5 (no shift / ×1).
+  const defY = (i: number) => (isHue ? 0.5 : i === 0 ? 0 : 1)
   const count = Math.round(num(values[`crv${ch}_n`], 2))
   const pts: Pt[] = Array.from({ length: count }, (_, i) => ({
     x: num(values[`crv${ch}_x${i}`], i === 0 ? 0 : 1),
-    y: num(values[`crv${ch}_y${i}`], i === 0 ? 0 : 1),
+    y: num(values[`crv${ch}_y${i}`], defY(i)),
   }))
 
   const round = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 1000) / 1000
@@ -191,15 +209,23 @@ export function CurveEditor({
     }
   }
 
-  // Drag an existing point. Endpoints are x-locked at 0 and 1.
+  // Drag an existing point. Endpoints can slide inward (start later / end
+  // earlier, DaVinci-style) but stay pinned to the 0 / 1 edges — the shader
+  // (and evalCurve) hold the curve flat at the endpoint's y beyond it.
   const dragPoint = (clientX: number, clientY: number) => {
     const i = dragIndex.current
     if (i === null) return
     const p = fromEvent(clientX, clientY)
     const next = pts.map((q) => ({ ...q }))
-    if (i === 0) next[0] = { x: 0, y: round(p.y) }
-    else if (i === count - 1) next[count - 1] = { x: 1, y: round(p.y) }
-    else {
+    if (i === 0) {
+      const nextPt = next[1]
+      const hi = nextPt ? nextPt.x - 0.005 : 1
+      next[0] = { x: round(Math.max(0, Math.min(hi, p.x))), y: round(p.y) }
+    } else if (i === count - 1) {
+      const prev = next[count - 2]
+      const lo = prev ? prev.x + 0.005 : 0
+      next[count - 1] = { x: round(Math.max(lo, Math.min(1, p.x))), y: round(p.y) }
+    } else {
       const prev = next[i - 1]
       const nextPt = next[i + 1]
       if (!prev || !nextPt) return
@@ -222,10 +248,17 @@ export function CurveEditor({
   }
 
   const reset = () =>
-    writePts([
-      { x: 0, y: 0 },
-      { x: 1, y: 1 },
-    ])
+    writePts(
+      isHue
+        ? [
+            { x: 0, y: 0.5 },
+            { x: 1, y: 0.5 },
+          ]
+        : [
+            { x: 0, y: 0 },
+            { x: 1, y: 1 },
+          ],
+    )
 
   // Sample the (possibly splined) curve for the polyline.
   const line = Array.from({ length: 65 }, (_, k) => {
@@ -235,8 +268,8 @@ export function CurveEditor({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <div className="flex gap-1">
+      <div className="flex flex-wrap items-center justify-between gap-y-1">
+        <div className="flex flex-wrap items-center gap-1">
           {CHANNELS.map((c) => (
             <button
               key={c.id}
@@ -247,6 +280,22 @@ export function CurveEditor({
                 ch === c.id ? 'bg-muted' : 'text-muted-foreground hover:text-foreground',
               )}
               style={ch === c.id ? { color: c.color } : undefined}
+            >
+              {c.label}
+            </button>
+          ))}
+          <span className="mx-0.5 h-4 w-px bg-border" />
+          {HUE_CURVES.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => setCh(c.id)}
+              className={cn(
+                'rounded px-1.5 py-1 text-[11px] font-medium transition-colors',
+                ch === c.id
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
             >
               {c.label}
             </button>
@@ -303,14 +352,37 @@ export function CurveEditor({
         {/* Decorative layers ignore pointer events so the draggable handles
             below are the only interactive children; clicks anywhere else fall
             through to the svg's onPointerDown and add a point. */}
-        {histPoints && (
-          <polygon
-            points={histPoints}
-            fill={color}
-            fillOpacity={0.16}
-            stroke="none"
-            pointerEvents="none"
-          />
+        {/* Hue curves get a rainbow x-axis strip; tone curves the signal histogram. */}
+        {isHue ? (
+          <>
+            <defs>
+              <linearGradient id="hue-axis" x1="0" y1="0" x2="1" y2="0">
+                {HUE_STOPS.map((c, i) => {
+                  const offset = `${(i / (HUE_STOPS.length - 1)) * 100}%`
+                  return <stop key={offset} offset={offset} stopColor={c} />
+                })}
+              </linearGradient>
+            </defs>
+            <rect
+              x={0}
+              y={0}
+              width={VBW}
+              height={VBH}
+              fill="url(#hue-axis)"
+              opacity={0.14}
+              pointerEvents="none"
+            />
+          </>
+        ) : (
+          histPoints && (
+            <polygon
+              points={histPoints}
+              fill={color}
+              fillOpacity={0.16}
+              stroke="none"
+              pointerEvents="none"
+            />
+          )
         )}
         {[0.25, 0.5, 0.75].map((g) => (
           <g key={g} stroke="rgba(255,255,255,0.07)" strokeWidth={0.5} pointerEvents="none">
@@ -318,15 +390,28 @@ export function CurveEditor({
             <line x1={0} y1={g * VBH} x2={VBW} y2={g * VBH} />
           </g>
         ))}
-        <line
-          x1={0}
-          y1={VBH}
-          x2={VBW}
-          y2={0}
-          stroke="rgba(255,255,255,0.12)"
-          strokeWidth={0.5}
-          pointerEvents="none"
-        />
+        {/* Neutral reference: identity diagonal for tone, mid line for hue. */}
+        {isHue ? (
+          <line
+            x1={0}
+            y1={VBH / 2}
+            x2={VBW}
+            y2={VBH / 2}
+            stroke="rgba(255,255,255,0.12)"
+            strokeWidth={0.5}
+            pointerEvents="none"
+          />
+        ) : (
+          <line
+            x1={0}
+            y1={VBH}
+            x2={VBW}
+            y2={0}
+            stroke="rgba(255,255,255,0.12)"
+            strokeWidth={0.5}
+            pointerEvents="none"
+          />
+        )}
         <polyline
           points={line}
           fill="none"
@@ -360,7 +445,9 @@ export function CurveEditor({
         ))}
       </svg>
       <p className="text-[10px] text-muted-foreground">
-        Click + drag to add · right-click to remove · Spline for curves
+        {isHue
+          ? 'x = source hue · drag to shift hue / sat / luma · right-click to remove'
+          : 'Click + drag to add · right-click to remove · Spline for curves'}
       </p>
     </div>
   )
