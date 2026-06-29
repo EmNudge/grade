@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { CHROMA_HUES, COLOR_CORRECT_NODE, createDefaultRegistry } from './builtin'
+import { CHROMA_PT_MAX, COLOR_CORRECT_NODE, createDefaultRegistry } from './builtin'
 import { defaultValues } from './registry'
 
 describe('node registry', () => {
@@ -59,11 +59,16 @@ describe('node registry', () => {
     }
   })
 
-  test('chroma-warp params exist for every hue sector', () => {
+  test('chroma-warp stroke params exist for every slot', () => {
     const keys = new Set(COLOR_CORRECT_NODE.params.map((p) => p.key))
-    for (const h of CHROMA_HUES) {
-      expect(keys.has(`cw_h_${h.key}`)).toBe(true)
-      expect(keys.has(`cw_s_${h.key}`)).toBe(true)
+    expect(keys.has('cw_n')).toBe(true)
+    expect(keys.has('cw_tlo')).toBe(true)
+    expect(keys.has('cw_thi')).toBe(true)
+    expect(keys.has('cw_tpv')).toBe(true)
+    for (let i = 0; i < CHROMA_PT_MAX; i++) {
+      for (const f of ['sx', 'sy', 'tx', 'ty', 'r', 'e']) {
+        expect(keys.has(`cw_${f}${i}`)).toBe(true)
+      }
     }
   })
 })

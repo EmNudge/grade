@@ -181,6 +181,19 @@ function curvePts(channel: string): ParamDef[] {
       max: CURVE_MAX,
       step: 1,
     },
+    {
+      // White ceiling — DaVinci's top notch. Remaps the curve's output into
+      // [1-wht, wht]: pulling the ceiling down raises the floor by the same
+      // amount, compressing the tonal range symmetrically. 1 = no change.
+      key: `crv${channel}_wht`,
+      label: 'White',
+      group: 'Curves',
+      type: 'float',
+      default: 1,
+      min: 0.5,
+      max: 1,
+      step: 0.001,
+    },
   ]
   for (let i = 0; i < CURVE_MAX; i++) {
     // Defaults: point 0 at (0,0), all others at (1,1) -> a straight identity line.
@@ -300,29 +313,131 @@ export const CHROMA_HUES = [
   { key: 'm', label: 'Magenta', color: '#d25aff' },
 ] as const
 
+/** Max number of Chroma Warp strokes (control points). Shared with the UI. */
+export const CHROMA_PT_MAX = 6
+
+/**
+ * Chroma Warp params — DaVinci Color-Warper "Chroma Warp" style. Instead of six
+ * fixed hue sectors, the user drops up to {@link CHROMA_PT_MAX} *strokes* on a
+ * chromaticity plane. Each stroke pulls colours near its **source** point toward
+ * a **target** point with a Gaussian falloff (`r`) and an optional exposure push
+ * (`e`). A global tonal-range gate (`tlo`/`thi`/`tpv`) restricts the warp to a
+ * luminance window. Neutral by default (`n = 0` strokes), so it's a no-op.
+ */
 function chromaParams(): ParamDef[] {
-  return CHROMA_HUES.flatMap((h): ParamDef[] => [
+  const out: ParamDef[] = [
     {
-      key: `cw_h_${h.key}`,
-      label: `${h.label} Hue`,
+      key: 'cw_n',
+      label: 'Strokes',
       group: 'Chroma',
       type: 'float',
       default: 0,
-      min: -1,
-      max: 1,
-      step: 0.01,
+      min: 0,
+      max: CHROMA_PT_MAX,
+      step: 1,
     },
     {
-      key: `cw_s_${h.key}`,
-      label: `${h.label} Sat`,
+      key: 'cw_tlo',
+      label: 'Tonal Low',
       group: 'Chroma',
       type: 'float',
       default: 1,
       min: 0,
-      max: 2,
+      max: 1,
       step: 0.01,
     },
-  ])
+    {
+      key: 'cw_thi',
+      label: 'Tonal High',
+      group: 'Chroma',
+      type: 'float',
+      default: 1,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+    {
+      key: 'cw_tpv',
+      label: 'Tonal Pivot',
+      group: 'Chroma',
+      type: 'float',
+      default: 0.5,
+      min: 0,
+      max: 1,
+      step: 0.01,
+    },
+  ]
+  for (let i = 0; i < CHROMA_PT_MAX; i++) {
+    out.push(
+      {
+        key: `cw_sx${i}`,
+        label: `S${i} Src X`,
+        group: 'Chroma',
+        type: 'float',
+        default: 0,
+        min: -1,
+        max: 1,
+        step: 0.001,
+      },
+      {
+        key: `cw_sy${i}`,
+        label: `S${i} Src Y`,
+        group: 'Chroma',
+        type: 'float',
+        default: 0,
+        min: -1,
+        max: 1,
+        step: 0.001,
+      },
+      {
+        key: `cw_tx${i}`,
+        label: `S${i} Tgt X`,
+        group: 'Chroma',
+        type: 'float',
+        default: 0,
+        min: -1,
+        max: 1,
+        step: 0.001,
+      },
+      {
+        key: `cw_ty${i}`,
+        label: `S${i} Tgt Y`,
+        group: 'Chroma',
+        type: 'float',
+        default: 0,
+        min: -1,
+        max: 1,
+        step: 0.001,
+      },
+      {
+        key: `cw_r${i}`,
+        label: `S${i} Range`,
+        group: 'Chroma',
+        type: 'float',
+        default: 0.25,
+        min: 0.02,
+        max: 1.5,
+        step: 0.01,
+      },
+      {
+        key: `cw_e${i}`,
+        label: `S${i} Exposure`,
+        group: 'Chroma',
+        type: 'float',
+        default: 0,
+        min: -1,
+        max: 1,
+        step: 0.01,
+      },
+    )
+  }
+  return out
+}
+
+/** Build a WGSL `array<f32, N>(P.cw_<field>0, …)` literal for a stroke field. */
+function chromaArr(field: string): string {
+  const items = Array.from({ length: CHROMA_PT_MAX }, (_, i) => `P.cw_${field}${i}`)
+  return `array<f32, ${CHROMA_PT_MAX}>(${items.join(', ')})`
 }
 
 /**
@@ -441,6 +556,13 @@ export const COLOR_CORRECT_NODE: NodeDef = {
         let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
         return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
       }
+      // White-ceiling notch: remap a curve's [0,1] output into [1-wht, wht],
+      // pulling the ceiling down and raising the floor by the same amount so the
+      // tonal range compresses symmetrically around mid-grey. wht=1 -> identity.
+      fn grade_curveCeil(y: f32, wht: f32) -> f32 {
+        let lo = 1.0 - wht;
+        return lo + y * (wht - lo);
+      }
     `,
     body: /* wgsl */ `
       let lift = vec3<f32>(P.lift_m) + vec3<f32>(P.lift_r, P.lift_g, P.lift_b);
@@ -451,9 +573,11 @@ export const COLOR_CORRECT_NODE: NodeDef = {
       color = color * (gain - lift) + lift;
       color = color + offset;
       color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0) / max(gamma, vec3<f32>(0.0001)));
-      // per-channel tone curves, then the master curve.
-      color = vec3<f32>(${curveCall('r', 'color.r')}, ${curveCall('g', 'color.g')}, ${curveCall('b', 'color.b')});
-      color = vec3<f32>(${curveCall('m', 'color.r')}, ${curveCall('m', 'color.g')}, ${curveCall('m', 'color.b')});
+      // per-channel tone curves, then the master curve. Each curve's output is
+      // remapped by its white ceiling (the top notch), compressing the tonal
+      // range symmetrically (ceiling down + floor up by the same amount).
+      color = vec3<f32>(grade_curveCeil(${curveCall('r', 'color.r')}, P.crvr_wht), grade_curveCeil(${curveCall('g', 'color.g')}, P.crvg_wht), grade_curveCeil(${curveCall('b', 'color.b')}, P.crvb_wht));
+      color = vec3<f32>(grade_curveCeil(${curveCall('m', 'color.r')}, P.crvm_wht), grade_curveCeil(${curveCall('m', 'color.g')}, P.crvm_wht), grade_curveCeil(${curveCall('m', 'color.b')}, P.crvm_wht));
 
       // Primaries adjustment sliders (DaVinci's row under the wheels): warm/cool
       // temperature and green/magenta tint as channel gains, shadow/highlight
@@ -487,19 +611,46 @@ export const COLOR_CORRECT_NODE: NodeDef = {
       let globalZone = vec3<f32>(P.global_m) + vec3<f32>(P.global_r, P.global_g, P.global_b);
       color = color + darkZone * wDark + shadowZone * wShadow + lightZone * wLight + globalZone;
 
-      // Chroma Warp: per-hue hue-shift + saturation, blended around the wheel.
-      var hsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
-      var cwH = array<f32, 6>(P.cw_h_r, P.cw_h_y, P.cw_h_g, P.cw_h_c, P.cw_h_b, P.cw_h_m);
-      var cwS = array<f32, 6>(P.cw_s_r, P.cw_s_y, P.cw_s_g, P.cw_s_c, P.cw_s_b, P.cw_s_m);
-      let h6 = fract(hsv.x) * 6.0;
-      let si = i32(floor(h6)) % 6;
-      let sj = (si + 1) % 6;
-      let sf = fract(h6);
-      let dHue = mix(cwH[si], cwH[sj], sf) * 0.1; // ±1 -> ±36°
-      let mSat = mix(cwS[si], cwS[sj], sf);
-      hsv.x = fract(hsv.x + dHue);
-      hsv.y = clamp(hsv.y * mSat, 0.0, 1.0);
-      color = grade_hsv2rgb(hsv);
+      // Chroma Warp (DaVinci Color-Warper style): treat the pixel's chroma as a
+      // 2D point p = sat·(cos h, sin h). Each stroke pulls p from a source toward
+      // a target with a Gaussian falloff (radius r), optionally pushing exposure.
+      // A global tonal window gates the whole thing by luminance.
+      {
+        var hsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
+        let cwA = hsv.x * 6.28318530718;
+        var p = vec2<f32>(hsv.y * cos(cwA), hsv.y * sin(cwA));
+        var sx = ${chromaArr('sx')};
+        var sy = ${chromaArr('sy')};
+        var tx = ${chromaArr('tx')};
+        var ty = ${chromaArr('ty')};
+        var rr = ${chromaArr('r')};
+        var ee = ${chromaArr('e')};
+        let cwN = i32(P.cw_n + 0.5);
+        // Global tonal-range gate. low/high = 1 (defaults) -> full range.
+        let cwLuma = clamp(dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+        let loB = P.cw_tpv * (1.0 - P.cw_tlo);
+        let hiB = P.cw_tpv + (1.0 - P.cw_tpv) * P.cw_thi;
+        let tonal = clamp(
+          smoothstep(loB - 0.04, loB + 0.04, cwLuma) *
+          (1.0 - smoothstep(hiB - 0.04, hiB + 0.04, cwLuma)),
+          0.0, 1.0);
+        var cwDisp = vec2<f32>(0.0, 0.0);
+        var cwExp = 0.0;
+        for (var i = 0; i < cwN; i = i + 1) {
+          let src = vec2<f32>(sx[i], sy[i]);
+          let tgt = vec2<f32>(tx[i], ty[i]);
+          let sig = max(rr[i], 1e-3);
+          let dd = distance(p, src);
+          let w = exp(-(dd * dd) / (2.0 * sig * sig));
+          cwDisp = cwDisp + (tgt - src) * w;
+          cwExp = cwExp + ee[i] * w;
+        }
+        p = p + cwDisp * tonal;
+        hsv.y = clamp(length(p), 0.0, 1.0);
+        hsv.x = fract(atan2(p.y, p.x) / 6.28318530718);
+        hsv.z = clamp(hsv.z * exp2(cwExp * tonal), 0.0, 4.0);
+        color = grade_hsv2rgb(hsv);
+      }
 
       // Color Warp: per-hue hue-bend + luminance gain (DaVinci's hue-vs-
       // lightness grid). Weighted by saturation so neutrals stay neutral.

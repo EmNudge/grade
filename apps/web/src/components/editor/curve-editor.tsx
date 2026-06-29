@@ -53,30 +53,44 @@ interface Frame {
   format: 'RGBA' | 'BGRA'
 }
 
-/** 256-bin distribution of a frame's pixels for one channel (R/G/B or Y luma). */
-function histogramBins(frame: Frame, ch: Ch): number[] {
+// Where the background histogram samples the signal (or off entirely).
+type HistMode = 'input' | 'output' | 'off'
+const HIST_LABEL: Record<HistMode, string> = {
+  input: 'Hist: In',
+  output: 'Hist: Out',
+  off: 'Hist: Off',
+}
+
+interface RgbHist {
+  r: number[]
+  g: number[]
+  b: number[]
+}
+
+/**
+ * 256-bin R/G/B distributions of a frame, colour-separated (DaVinci-style) so
+ * casts are visible rather than a flat grey luma blob. All three share one
+ * normalisation (the tallest interior bin across channels) so their heights stay
+ * comparable.
+ */
+function histogramRGB(frame: Frame): RgbHist {
   const { data } = frame
   const bgra = frame.format === 'BGRA'
-  const bins = new Float32Array(256)
+  const r = new Float32Array(256)
+  const g = new Float32Array(256)
+  const b = new Float32Array(256)
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[bgra ? i + 2 : i] ?? 0
-    const g = data[i + 1] ?? 0
-    const b = data[bgra ? i : i + 2] ?? 0
-    const v =
-      ch === 'r'
-        ? r
-        : ch === 'g'
-          ? g
-          : ch === 'b'
-            ? b
-            : Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b)
-    const bin = v < 0 ? 0 : v > 255 ? 255 : v
-    bins[bin] = (bins[bin] ?? 0) + 1
+    const rv = data[bgra ? i + 2 : i] ?? 0
+    const gv = data[i + 1] ?? 0
+    const bv = data[bgra ? i : i + 2] ?? 0
+    r[rv] = (r[rv] ?? 0) + 1
+    g[gv] = (g[gv] ?? 0) + 1
+    b[bv] = (b[bv] ?? 0) + 1
   }
-  // Normalise to the tallest interior bin so pure-black/white spikes don't flatten it.
   let max = 1
-  for (let i = 1; i < 255; i++) max = Math.max(max, bins[i] ?? 0)
-  return Array.from(bins, (c) => Math.min(1, c / max))
+  for (let i = 1; i < 255; i++) max = Math.max(max, r[i] ?? 0, g[i] ?? 0, b[i] ?? 0)
+  const norm = (bins: Float32Array) => Array.from(bins, (c) => Math.min(1, c / max))
+  return { r: norm(r), g: norm(g), b: norm(b) }
 }
 
 // Mirrors the shader's grade_curveN: linear, or Catmull-Rom when smooth.
@@ -129,23 +143,35 @@ export function CurveEditor({
   const [ch, setCh] = useState<Ch>('m')
   const svgRef = useRef<SVGSVGElement>(null)
   const dragIndex = useRef<number | null>(null)
+  const dragCeil = useRef<'top' | 'bottom' | null>(null)
   const color = ALL_CHANNELS.find((c) => c.id === ch)!.color
   const isHue = isHueCh(ch)
   const smooth = Boolean(values['crv_smooth'])
+  // White ceiling (the top notch): remaps the curve output into [floor, ceil] =
+  // [1-wht, wht], so dropping the ceiling raises the floor by the same amount.
+  // Tone curves only. `span` is kept >0 for the inverse used while dragging.
+  const wht = isHue ? 1 : num(values[`crv${ch}_wht`], 1)
+  const floor = 1 - wht
+  const span = wht - floor
+  const spanSafe = Math.max(span, 1e-3)
+  // raw curve y (0..1) <-> screen-normalised output (0 = bottom, 1 = top).
+  const toScreenY = (rawY: number) => (1 - (floor + rawY * span)) * VBH
+  const toRawY = (outNorm: number) => (outNorm - floor) / spanSafe
 
-  // Upstream signal distribution, drawn behind the grid. Sampled off the engine
-  // at the node's input, so it reflects everything before this curve.
+  // Signal distribution drawn behind the grid, colour-separated. Configurable to
+  // sample the curve's input (pre-grade) or output (post-grade), or be turned
+  // off, since the histogram only applies to the tone curves (not hue curves).
   const engine = useEditor((s) => s.engine)
-  const [hist, setHist] = useState<number[] | null>(null)
-  const chRef = useRef(ch)
-  chRef.current = ch
+  const [histMode, setHistMode] = useState<HistMode>('input')
+  const [hist, setHist] = useState<RgbHist | null>(null)
+  const histOn = histMode !== 'off' && !isHue
 
   useEffect(() => {
-    if (!engine || !histogramSource) {
+    if (!engine || !histogramSource || !histOn) {
       setHist(null)
       return undefined
     }
-    engine.setHistogramSource(histogramSource)
+    engine.setHistogramSource(histogramSource, histMode)
     const live = { current: true }
     let busy = false
     let timer = 0
@@ -155,7 +181,7 @@ export function CurveEditor({
         busy = true
         try {
           const frame = await engine.sampleNodeInput(HIST_W, HIST_H)
-          if (live.current) setHist(frame ? histogramBins(frame, chRef.current) : null)
+          if (live.current) setHist(frame ? histogramRGB(frame) : null)
         } catch {
           /* readback hiccup — keep the last histogram */
         }
@@ -169,12 +195,11 @@ export function CurveEditor({
       window.clearTimeout(timer)
       engine.setHistogramSource(null)
     }
-  }, [engine, histogramSource])
+  }, [engine, histogramSource, histMode, histOn])
 
-  // Filled area under the (normalised) bins, in the viewBox; bottom-anchored.
-  const histPoints =
-    hist &&
-    `0,${VBH} ${hist
+  // Filled area under a channel's (normalised) bins, in the viewBox; bottom-anchored.
+  const histPoly = (bins: number[]) =>
+    `0,${VBH} ${bins
       .map((v, i) => `${((i / 255) * VBW).toFixed(2)},${(VBH - v * (VBH * 0.9)).toFixed(2)}`)
       .join(' ')} ${VBW},${VBH}`
 
@@ -216,6 +241,7 @@ export function CurveEditor({
     const i = dragIndex.current
     if (i === null) return
     const p = fromEvent(clientX, clientY)
+    p.y = toRawY(p.y) // undo the ceiling remap so handles track the cursor
     const next = pts.map((q) => ({ ...q }))
     if (i === 0) {
       const nextPt = next[1]
@@ -247,7 +273,8 @@ export function CurveEditor({
     writePts(pts.filter((_, k) => k !== i))
   }
 
-  const reset = () =>
+  const reset = () => {
+    if (!isHue) onChange({ [`crv${ch}_wht`]: 1 })
     writePts(
       isHue
         ? [
@@ -259,12 +286,29 @@ export function CurveEditor({
             { x: 1, y: 1 },
           ],
     )
+  }
 
-  // Sample the (possibly splined) curve for the polyline.
+  // Sample the (possibly splined) curve for the polyline, remapped by the ceiling.
   const line = Array.from({ length: 65 }, (_, k) => {
     const x = k / 64
-    return `${(x * VBW).toFixed(2)},${((1 - evalCurve(x, pts, smooth)) * VBH).toFixed(2)}`
+    return `${(x * VBW).toFixed(2)},${toScreenY(evalCurve(x, pts, smooth)).toFixed(2)}`
   }).join(' ')
+
+  // Symmetric ceiling/floor notches. The top notch sets the ceiling (wht); the
+  // bottom notch sets the floor (1-wht). Both clamp to [0.5, 1] so the range
+  // never inverts. ceilY/floorY are mirror images around the mid-line.
+  const ceilY = floor * VBH // screen y of the ceiling (out = wht)
+  const floorY = wht * VBH // screen y of the floor (out = 1-wht)
+  const setCeiling = (c: number) =>
+    onChange({ [`crv${ch}_wht`]: round(Math.min(1, Math.max(0.5, c))) })
+  const setCeil = (clientY: number) => {
+    const r = svgRef.current!.getBoundingClientRect()
+    setCeiling(1 - (clientY - r.top) / r.height)
+  }
+  const setFloor = (clientY: number) => {
+    const r = svgRef.current!.getBoundingClientRect()
+    setCeiling((clientY - r.top) / r.height) // floor rises -> ceiling = 1 - floor
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -302,6 +346,23 @@ export function CurveEditor({
           ))}
         </div>
         <div className="flex items-center gap-1">
+          {!isHue && (
+            <button
+              type="button"
+              onClick={() =>
+                setHistMode((m) => (m === 'input' ? 'output' : m === 'output' ? 'off' : 'input'))
+              }
+              className={cn(
+                'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
+                histMode !== 'off'
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+              title="Histogram source: input → output → off"
+            >
+              {HIST_LABEL[histMode]}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onChange({ crv_smooth: !smooth })}
@@ -328,7 +389,7 @@ export function CurveEditor({
         ref={svgRef}
         viewBox={`0 0 ${VBW} ${VBH}`}
         preserveAspectRatio="none"
-        className="aspect-[2/1] w-full max-w-[400px] touch-none rounded-md border border-border bg-[#0d0d0d]"
+        className="aspect-[2/1] w-full max-w-[400px] touch-none overflow-visible rounded-md border border-border bg-[#0d0d0d]"
         onPointerDown={(e) => {
           // Grabbing a handle stops propagation (see the circles below), so any
           // pointerdown that reaches the svg is on empty space: add a point and
@@ -338,14 +399,17 @@ export function CurveEditor({
           const p = fromEvent(e.clientX, e.clientY)
           const nx = round(p.x)
           dragIndex.current = pts.filter((q) => q.x < nx).length
-          writePts([...pts, { x: nx, y: round(p.y) }])
+          writePts([...pts, { x: nx, y: round(toRawY(p.y)) }])
           svgRef.current?.setPointerCapture(e.pointerId)
         }}
         onPointerMove={(e) => {
-          if (dragIndex.current !== null) dragPoint(e.clientX, e.clientY)
+          if (dragCeil.current === 'top') setCeil(e.clientY)
+          else if (dragCeil.current === 'bottom') setFloor(e.clientY)
+          else if (dragIndex.current !== null) dragPoint(e.clientX, e.clientY)
         }}
         onPointerUp={(e) => {
           dragIndex.current = null
+          dragCeil.current = null
           svgRef.current?.releasePointerCapture(e.pointerId)
         }}
       >
@@ -374,14 +438,19 @@ export function CurveEditor({
             />
           </>
         ) : (
-          histPoints && (
-            <polygon
-              points={histPoints}
-              fill={color}
-              fillOpacity={0.16}
-              stroke="none"
-              pointerEvents="none"
-            />
+          hist && (
+            <g pointerEvents="none">
+              {(['b', 'g', 'r'] as const).map((c) => (
+                <polygon
+                  key={c}
+                  points={histPoly(hist[c])}
+                  fill={c === 'r' ? '#ff5a5a' : c === 'g' ? '#5aff7d' : '#5a8cff'}
+                  fillOpacity={0.45}
+                  stroke="none"
+                  style={{ mixBlendMode: 'screen' }}
+                />
+              ))}
+            </g>
           )
         )}
         {[0.25, 0.5, 0.75].map((g) => (
@@ -420,11 +489,65 @@ export function CurveEditor({
           vectorEffect="non-scaling-stroke"
           pointerEvents="none"
         />
+        {/* Symmetric ceiling/floor notches: drag the top one down (or the bottom
+            one up) to compress the output range equally from both ends. */}
+        {!isHue &&
+          (
+            [
+              // top notch at the left, bottom notch at the right — diagonally
+              // opposite, clear of the black/white endpoints in the other corners.
+              ['top', ceilY, 6] as const,
+              ['bottom', floorY, VBW - 6] as const,
+            ] as const
+          ).map(([side, y, cx]) => {
+            // The arrow sits on the *outward* side of its line (above the top
+            // notch, below the bottom one) so it pokes out of the box at the
+            // extremes — the svg is overflow-visible, so it isn't clipped there.
+            const dir = side === 'top' ? -1 : 1
+            const tri = `${cx - 3},${y + dir * 6} ${cx + 3},${y + dir * 6} ${cx},${y}`
+            return (
+              <g key={side}>
+                <line
+                  x1={0}
+                  y1={y}
+                  x2={VBW}
+                  y2={y}
+                  stroke={color}
+                  strokeOpacity={wht < 0.999 ? 0.4 : 0.15}
+                  strokeWidth={0.5}
+                  strokeDasharray="2 2"
+                  pointerEvents="none"
+                />
+                {/* generous transparent hit area, biased to the protruding side */}
+                <rect
+                  x={cx - 10}
+                  y={side === 'top' ? y - 12 : y - 3}
+                  width={20}
+                  height={15}
+                  fill="transparent"
+                  className="cursor-ns-resize"
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return
+                    e.stopPropagation()
+                    dragCeil.current = side
+                    svgRef.current?.setPointerCapture(e.pointerId)
+                  }}
+                />
+                <polygon
+                  points={tri}
+                  fill={color}
+                  stroke="#000"
+                  strokeWidth={0.5}
+                  pointerEvents="none"
+                />
+              </g>
+            )
+          })}
         {pts.map((p, i) => (
           <circle
             key={`${p.x}-${p.y}`}
             cx={p.x * VBW}
-            cy={(1 - p.y) * VBH}
+            cy={toScreenY(p.y)}
             r={2.6}
             fill={color}
             stroke="#000"
