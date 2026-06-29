@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast checks: formatting, linting, and type-checking. Kept in one job so they
+  # share a single toolchain + dependency install.
+  check:
+    name: Format, lint & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up proto toolchain (moon + bun)
+        uses: moonrepo/setup-toolchain@v0
+        with:
+          auto-install: true
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Format, lint & typecheck
+        run: bun run check
+
+  # WGSL validation runs in a separate, parallel job: building/installing naga
+  # is slower than the checks above, so isolating it keeps the fast job fast.
+  # The cargo-install action caches the prebuilt binary, so it's near-instant
+  # after the first run.
+  wgsl:
+    name: WGSL validation (naga)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up proto toolchain (moon + bun)
+        uses: moonrepo/setup-toolchain@v0
+        with:
+          auto-install: true
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install naga (WGSL validator)
+        uses: baptiste0928/cargo-install@v3
+        with:
+          crate: naga-cli
+          version: '29.0.3'
+
+      - name: Validate every node's generated WGSL
+        run: moon run engine:test

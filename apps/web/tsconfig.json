@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["**/*.ts", "**/*.tsx"],
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "@webgpu/types"],
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "#/*": ["./src/*"],
+      "@/*": ["./src/*"],
+      "@grade/color": ["../../packages/color/src/index.ts"],
+      "@grade/engine": ["../../packages/engine/src/index.ts"],
+      "@grade/nodes": ["../../packages/nodes/src/index.ts"]
+    }
+  }
+}

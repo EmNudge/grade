@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+
+# moon runtime cache
+.moon/cache/
+
+# wrangler
+.wrangler/
+
+# os
+.DS_Store

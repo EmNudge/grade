@@ -1,0 +1,10 @@
+$schema: 'https://moonrepo.dev/schemas/project.json'
+
+language: 'typescript'
+layer: 'library'
+
+tasks:
+  test:
+    command: 'bun test'
+    inputs:
+      - 'src/**/*'

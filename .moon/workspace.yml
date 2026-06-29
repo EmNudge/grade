@@ -1,0 +1,6 @@
+$schema: 'https://moonrepo.dev/schemas/workspace.json'
+
+# Discover all apps and packages automatically.
+projects:
+  - 'apps/*'
+  - 'packages/*'

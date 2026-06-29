@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreBinaries": ["moon"],
+  "ignoreDependencies": ["shadcn", "tw-animate-css", "tailwindcss", "@fontsource-variable/inter"],
+  "workspaces": {
+    "apps/web": {
+      "entry": ["src/router.tsx", "src/routes/**/*.{ts,tsx}", "src/components/ui/**/*.{ts,tsx}"],
+      "project": "src/**/*.{ts,tsx}"
+    },
+    "packages/*": {
+      "project": "src/**/*.ts"
+    }
+  }
+}
