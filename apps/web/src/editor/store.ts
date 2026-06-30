@@ -236,6 +236,10 @@ interface EditorState {
   video: HTMLVideoElement | null
   canvas: HTMLCanvasElement | null
   engine: Engine | null
+  /** When a hue-curve tab is open, the CurveEditor registers a picker here so the
+   *  Viewer can offer an eyedropper: click the image and a control point is
+   *  dropped at the sampled pixel's hue. Null when nothing wants the eyedropper. */
+  eyedropPick: ((rgb: [number, number, number]) => void) | null
   clipName: string | null
   clipFps: number | null
   /** A clip the Viewer should load on its next render (e.g. a project's footage
@@ -268,6 +272,7 @@ interface EditorState {
   setVideo: (video: HTMLVideoElement | null) => void
   setCanvas: (canvas: HTMLCanvasElement | null) => void
   setEngine: (engine: Engine | null) => void
+  setEyedropPick: (fn: ((rgb: [number, number, number]) => void) | null) => void
   setClipName: (name: string | null) => void
   setClipFps: (fps: number | null) => void
   /** Request that the Viewer load this clip (or null to clear a consumed request). */
@@ -354,6 +359,7 @@ export const useEditor = create<EditorState>((set, get) => {
     video: null,
     canvas: null,
     engine: null,
+    eyedropPick: null,
     clipName: null,
     clipFps: null,
     pendingClip: null,
@@ -549,6 +555,7 @@ export const useEditor = create<EditorState>((set, get) => {
     setVideo: (video) => set({ video }),
     setCanvas: (canvas) => set({ canvas }),
     setEngine: (engine) => set({ engine }),
+    setEyedropPick: (fn) => set({ eyedropPick: fn }),
     setClipName: (clipName) => set({ clipName }),
     setPendingClip: (pendingClip) => set({ pendingClip }),
     setClipFps: (clipFps) =>

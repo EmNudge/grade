@@ -4,9 +4,9 @@ An open-source, node-based color grading environment for the web. Build a DAG of
 color operations and apply them to footage in real time, on the GPU, via
 **WebGPU**.
 
-The core UI (node graph, viewer, inspector) ships built-in. Everything else —
-node types, color transforms, scopes — is a plugin against a small, documented
-node SDK.
+The core UI (node graph, viewer, inspector) ships built-in. Everything else is a
+plugin against a small, documented node SDK: node types, color transforms, and
+scopes.
 
 <img width="1512" height="855" alt="image" src="https://github.com/user-attachments/assets/409d3fa8-bbec-48f8-91e3-24ad74a5158e" />
 

@@ -168,7 +168,7 @@ function band(
 }
 
 /** Max control points per curve channel. Default curve is 2 points (linear). */
-export const CURVE_MAX = 5
+export const CURVE_MAX = 16
 function curvePts(channel: string): ParamDef[] {
   const out: ParamDef[] = [
     {
@@ -270,10 +270,23 @@ function huePts(channel: string): ParamDef[] {
   return out
 }
 
-const curveCall = (ch: string, inp: string) =>
+// `<field>0, <field>1, …` up to CURVE_MAX, so the curve fn + its call sites all
+// scale off the single CURVE_MAX constant instead of a hardcoded point count.
+const curveFields = (field: string): string[] =>
+  Array.from({ length: CURVE_MAX }, (_, i) => `${field}${i}`)
+
+// `smoothing` selects linear vs spline interpolation. Tone curves follow the
+// shared `crv_smooth` toggle; hue curves pass a literal `1.0` so they're always
+// splined (DaVinci-style) — with the reflected end tangents a flat or 2-point
+// hue curve still stays linear, so this only smooths actual bends.
+const curveCall = (ch: string, inp: string, smoothing = 'P.crv_smooth') =>
   `grade_curveN(${inp}, P.crv${ch}_n, ` +
-  `P.crv${ch}_x0, P.crv${ch}_x1, P.crv${ch}_x2, P.crv${ch}_x3, P.crv${ch}_x4, ` +
-  `P.crv${ch}_y0, P.crv${ch}_y1, P.crv${ch}_y2, P.crv${ch}_y3, P.crv${ch}_y4, P.crv_smooth)`
+  `${curveFields('x')
+    .map((f) => `P.crv${ch}_${f}`)
+    .join(', ')}, ` +
+  `${curveFields('y')
+    .map((f) => `P.crv${ch}_${f}`)
+    .join(', ')}, ${smoothing})`
 
 /**
  * DaVinci-style Primaries adjustment sliders (the row beneath the colour
@@ -441,37 +454,6 @@ function chromaArr(field: string): string {
 }
 
 /**
- * Color Warp params — the second half of DaVinci's Color Warper: a hue-vs-
- * *lightness* grid. Per hue sector, `lw_h_*` bends the hue and `lw_l_*` scales
- * its luminance. Neutral by default (no hue shift, ×1 luma), so it's a no-op
- * until used. Complements the chroma (hue/sat) warp above.
- */
-function colorWarpParams(): ParamDef[] {
-  return CHROMA_HUES.flatMap((h): ParamDef[] => [
-    {
-      key: `lw_h_${h.key}`,
-      label: `${h.label} Hue`,
-      group: 'Color Warp',
-      type: 'float',
-      default: 0,
-      min: -1,
-      max: 1,
-      step: 0.01,
-    },
-    {
-      key: `lw_l_${h.key}`,
-      label: `${h.label} Luma`,
-      group: 'Color Warp',
-      type: 'float',
-      default: 1,
-      min: 0,
-      max: 2,
-      step: 0.01,
-    },
-  ])
-}
-
-/**
  * Color Correction — Lift / Gamma / Gain / Offset color wheels plus per-channel
  * tone Curves (variable control points, linear interpolation). Lift sets the
  * black point, Gain the white point, Gamma the midtones. This is the base of
@@ -505,7 +487,6 @@ export const COLOR_CORRECT_NODE: NodeDef = {
     ...huePts('hl'),
     ...primarySliders(),
     ...chromaParams(),
-    ...colorWarpParams(),
   ],
   kernel: {
     lib: /* wgsl */ `
@@ -514,12 +495,16 @@ export const COLOR_CORRECT_NODE: NodeDef = {
       // (Note: 'smooth' is a reserved word in WGSL, so the param is 'smoothing'.)
       fn grade_curveN(
         x: f32, n: f32,
-        x0: f32, x1: f32, x2: f32, x3: f32, x4: f32,
-        y0: f32, y1: f32, y2: f32, y3: f32, y4: f32,
+        ${curveFields('x')
+          .map((f) => `${f}: f32`)
+          .join(', ')},
+        ${curveFields('y')
+          .map((f) => `${f}: f32`)
+          .join(', ')},
         smoothing: f32,
       ) -> f32 {
-        var xs = array<f32, 5>(x0, x1, x2, x3, x4);
-        var ys = array<f32, 5>(y0, y1, y2, y3, y4);
+        var xs = array<f32, ${CURVE_MAX}>(${curveFields('x').join(', ')});
+        var ys = array<f32, ${CURVE_MAX}>(${curveFields('y').join(', ')});
         let cnt = i32(n + 0.5);
         let xc = clamp(x, 0.0, 1.0);
         if (xc <= xs[0]) { return ys[0]; }
@@ -527,10 +512,13 @@ export const COLOR_CORRECT_NODE: NodeDef = {
           if (xc <= xs[i + 1]) {
             let t = (xc - xs[i]) / max(xs[i + 1] - xs[i], 1e-5);
             if (smoothing > 0.5) {
-              let p0 = ys[max(i - 1, 0)];
               let p1 = ys[i];
               let p2 = ys[i + 1];
-              let p3 = ys[min(i + 2, cnt - 1)];
+              // Reflect the phantom points at the ends so the end tangents equal
+              // the segment's own secant — a 2-point spline (and any point left
+              // on the line) stays straight until an interior point is moved.
+              let p0 = select(2.0 * p1 - p2, ys[max(i - 1, 0)], i - 1 >= 0);
+              let p3 = select(2.0 * p2 - p1, ys[min(i + 2, cnt - 1)], i + 2 <= cnt - 1);
               let t2 = t * t;
               let t3 = t2 * t;
               return 0.5 * ((2.0 * p1) + (-p0 + p2) * t
@@ -652,30 +640,14 @@ export const COLOR_CORRECT_NODE: NodeDef = {
         color = grade_hsv2rgb(hsv);
       }
 
-      // Color Warp: per-hue hue-bend + luminance gain (DaVinci's hue-vs-
-      // lightness grid). Weighted by saturation so neutrals stay neutral.
-      var hsvL = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
-      var lwH = array<f32, 6>(P.lw_h_r, P.lw_h_y, P.lw_h_g, P.lw_h_c, P.lw_h_b, P.lw_h_m);
-      var lwL = array<f32, 6>(P.lw_l_r, P.lw_l_y, P.lw_l_g, P.lw_l_c, P.lw_l_b, P.lw_l_m);
-      let lh6 = fract(hsvL.x) * 6.0;
-      let li = i32(floor(lh6)) % 6;
-      let lj = (li + 1) % 6;
-      let lf = fract(lh6);
-      let lwHue = mix(lwH[li], lwH[lj], lf) * 0.1; // ±1 -> ±36°
-      let lwLum = mix(lwL[li], lwL[lj], lf);
-      let lwW = hsvL.y; // saturation weight: grays untouched
-      hsvL.x = fract(hsvL.x + lwHue * lwW);
-      hsvL.z = clamp(hsvL.z * mix(1.0, lwLum, lwW), 0.0, 4.0);
-      color = grade_hsv2rgb(hsvL);
-
       // Hue curves (DaVinci's Hue vs Hue / Hue vs Sat / Hue vs Lum). The curve's
       // x-axis is the pixel's hue; its output (centred at 0.5 = neutral) rotates
       // hue, scales saturation, or scales luminance. Flat 0.5 -> a no-op.
       var hcHsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
       let hcH = hcHsv.x;
-      let hcHueShift = ${curveCall('hh', 'hcH')} - 0.5; // ±0.5 turn = ±180°
-      let hcSat = ${curveCall('hs', 'hcH')} * 2.0; // 0.5 -> ×1
-      let hcLum = ${curveCall('hl', 'hcH')} * 2.0; // 0.5 -> ×1
+      let hcHueShift = ${curveCall('hh', 'hcH', '1.0')} - 0.5; // ±0.5 turn = ±180°
+      let hcSat = ${curveCall('hs', 'hcH', '1.0')} * 2.0; // 0.5 -> ×1
+      let hcLum = ${curveCall('hl', 'hcH', '1.0')} * 2.0; // 0.5 -> ×1
       hcHsv.x = fract(hcHsv.x + hcHueShift);
       hcHsv.y = clamp(hcHsv.y * hcSat, 0.0, 1.0);
       hcHsv.z = clamp(hcHsv.z * hcLum, 0.0, 4.0);
