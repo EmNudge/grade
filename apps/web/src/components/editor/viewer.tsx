@@ -7,6 +7,13 @@ import { useEngine } from '../../editor/use-engine'
 import { useEditor } from '../../editor/store'
 import { Transport } from './transport'
 
+// Eyedropper (pipette) cursor for hue-curve picking — a white icon haloed in
+// black so it reads on any frame, with the hotspot at the dropper tip (2, 22).
+const PIPETTE_PATHS =
+  '<path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/>'
+const PIPETTE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#000" stroke-width="4">${PIPETTE_PATHS}</g><g stroke="#fff" stroke-width="2">${PIPETTE_PATHS}</g></svg>`
+const EYEDROPPER_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(PIPETTE_SVG)}") 2 22, crosshair`
+
 /** Draw the current video frame to a small JPEG data URL for a clip's bin tile. */
 function grabThumbnail(el: HTMLVideoElement): string | null {
   if (!el.videoWidth) return null
@@ -39,8 +46,38 @@ export function Viewer() {
   const hoveredStillId = useEditor((s) => s.hoveredStillId)
   const stills = useEditor((s) => s.stills)
   const hoveredStill = hoveredStillId ? stills.find((x) => x.id === hoveredStillId) : null
+  // True while a hue-curve tab is open: the canvas turns into an eyedropper that
+  // drops a control point at the clicked pixel's hue (handler lives in the store).
+  const eyedropping = useEditor((s) => s.eyedropPick != null)
 
   const engine = useEngine(canvasRef, video)
+
+  // Sample the graded pixel under the cursor and hand its colour to the curve
+  // editor's registered picker. Reads the frame back off the GPU (the WebGPU
+  // canvas can't be drawImage'd) at a modest width — hue doesn't need full res.
+  const pickColor = useCallback(async (e: React.MouseEvent) => {
+    const { eyedropPick, engine: eng } = useEditor.getState()
+    const canvas = canvasRef.current
+    if (!eyedropPick || !eng || !canvas) return
+    const rect = canvas.getBoundingClientRect()
+    const u = (e.clientX - rect.left) / rect.width
+    const v = (e.clientY - rect.top) / rect.height
+    if (u < 0 || u > 1 || v < 0 || v > 1) return
+    const dims = eng.dimensions
+    const w = Math.min(640, dims.width)
+    if (!w) return
+    const h = Math.max(1, Math.round((dims.height / dims.width) * w))
+    const frame = await eng.sampleScopes(w, h)
+    if (!frame) return
+    const px = Math.min(w - 1, Math.max(0, Math.floor(u * w)))
+    const py = Math.min(h - 1, Math.max(0, Math.floor(v * h)))
+    const idx = (py * w + px) * 4
+    const bgra = frame.format === 'BGRA'
+    const r = frame.data[bgra ? idx + 2 : idx] ?? 0
+    const g = frame.data[idx + 1] ?? 0
+    const b = frame.data[bgra ? idx : idx + 2] ?? 0
+    eyedropPick([r, g, b])
+  }, [])
 
   const captureStill = useCallback(async () => {
     setMenu(null)
@@ -180,6 +217,8 @@ export function Viewer() {
         >
           <canvas
             ref={canvasRef}
+            onClick={eyedropping ? (e) => void pickColor(e) : undefined}
+            style={eyedropping ? { cursor: EYEDROPPER_CURSOR } : undefined}
             className="max-h-full max-w-full rounded-sm object-contain shadow-lg"
           />
           {/* Preview the hovered still over the live frame. */}

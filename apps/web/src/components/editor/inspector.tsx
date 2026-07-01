@@ -7,7 +7,6 @@ import { type BuiltinLut, BUILTIN_LUTS, loadBuiltinLut } from '../../editor/luts
 import { registry } from '../../editor/registry'
 import { type FxInstance, type LoadedLut, type NodeValues, useEditor } from '../../editor/store'
 import { ChromaWarp } from './chroma-warp'
-import { ColorWarp } from './color-warp'
 import { ColorWheels } from './color-wheels'
 import { CurveEditor } from './curve-editor'
 import { Button } from '../ui/button'
@@ -82,9 +81,6 @@ export function Inspector() {
           <TabsTrigger value="chroma" className="flex-none">
             Chroma Warp
           </TabsTrigger>
-          <TabsTrigger value="colorwarp" className="flex-none">
-            Color Warp
-          </TabsTrigger>
           <TabsTrigger value="fx" className="ml-auto min-w-0 max-w-[220px] flex-none justify-start">
             <span className="truncate">{fxTabLabel(extraFx)}</span>
           </TabsTrigger>
@@ -113,9 +109,6 @@ export function Inspector() {
       <TabsContent value="chroma" className="min-h-0 flex-1 overflow-y-auto p-2">
         {baseFx && <ChromaWarp values={baseFx.values} onChange={onBase} />}
       </TabsContent>
-      <TabsContent value="colorwarp" className="min-h-0 flex-1 overflow-y-auto p-2">
-        {baseFx && <ColorWarp values={baseFx.values} onChange={onBase} />}
-      </TabsContent>
 
       <TabsContent value="fx" className="min-h-0 flex-1 overflow-y-auto">
         <div className="flex flex-col gap-3 p-2">
@@ -142,7 +135,7 @@ export function Inspector() {
 }
 
 /** The Inspector's flat tab set: four corrector views plus the FX bin. */
-type InspectorTab = 'primaries' | 'hdr' | 'curves' | 'chroma' | 'colorwarp' | 'fx'
+type InspectorTab = 'primaries' | 'hdr' | 'curves' | 'chroma' | 'fx'
 
 /** Searchable "Add FX" menu — type to filter the available effects, click to add. */
 function AddFxMenu({ defs, onAdd }: { defs: NodeDef[]; onAdd: (type: string) => void }) {

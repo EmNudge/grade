@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import { CURVE_MAX } from '@grade/nodes'
 import { RotateCcw } from 'lucide-react'
 import { type NodeValues, useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
 
-// Must match CURVE_MAX in @grade/nodes builtin.ts.
-const MAX = 5
+// The shader's per-curve control-point cap (x0..x{N-1}); kept in lockstep by
+// importing the same constant the kernel is generated from.
+const MAX = CURVE_MAX
 
 // viewBox is 2:1 (wide) so there's room to place points horizontally. It MUST
 // match the element's CSS aspect ratio: with preserveAspectRatio="none" the box
@@ -93,6 +95,45 @@ function histogramRGB(frame: Frame): RgbHist {
   return { r: norm(r), g: norm(g), b: norm(b) }
 }
 
+/**
+ * Hue of an 8-bit RGB triple as a 0..1 turn, or null when the pixel is too close
+ * to neutral for its hue to mean anything (grays would otherwise pile onto red).
+ */
+function rgbToHue(r: number, g: number, b: number): number | null {
+  const mx = Math.max(r, g, b)
+  const d = mx - Math.min(r, g, b)
+  if (d < 8) return null // < ~3% chroma — effectively neutral
+  let h: number
+  if (mx === r) h = ((g - b) / d) % 6
+  else if (mx === g) h = (b - r) / d + 2
+  else h = (r - g) / d + 4
+  h /= 6
+  return h < 0 ? h + 1 : h
+}
+
+/**
+ * 256-bin hue distribution of a frame, each pixel weighted by its chroma so
+ * vivid colours read louder than washed-out ones. Normalised to its own peak.
+ * Drawn behind the hue curves as an x = hue backdrop.
+ */
+function histogramHue(frame: Frame): number[] {
+  const { data } = frame
+  const bgra = frame.format === 'BGRA'
+  const bins = new Float32Array(256)
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[bgra ? i + 2 : i] ?? 0
+    const g = data[i + 1] ?? 0
+    const b = data[bgra ? i : i + 2] ?? 0
+    const h = rgbToHue(r, g, b)
+    if (h === null) continue
+    const bin = Math.min(255, Math.floor(h * 256))
+    bins[bin] = (bins[bin] ?? 0) + (Math.max(r, g, b) - Math.min(r, g, b)) / 255
+  }
+  let max = 1
+  for (let i = 0; i < 256; i++) max = Math.max(max, bins[i] ?? 0)
+  return Array.from(bins, (c) => Math.min(1, c / max))
+}
+
 // Mirrors the shader's grade_curveN: linear, or Catmull-Rom when smooth.
 function evalCurve(x: number, pts: Pt[], smooth: boolean): number {
   const n = pts.length
@@ -105,10 +146,14 @@ function evalCurve(x: number, pts: Pt[], smooth: boolean): number {
     if (xc <= b.x) {
       const t = (xc - a.x) / Math.max(b.x - a.x, 1e-5)
       if (smooth) {
-        const p0 = at(i - 1).y
         const p1 = a.y
         const p2 = b.y
-        const p3 = at(i + 2).y
+        // Reflect the phantom points at the ends (instead of clamping to the
+        // endpoint) so the end tangents equal the segment's own secant. That
+        // keeps a 2-point spline — and any point left on the line — perfectly
+        // straight; curvature only appears once an interior point is moved off.
+        const p0 = i - 1 >= 0 ? at(i - 1).y : 2 * p1 - p2
+        const p3 = i + 2 <= n - 1 ? at(i + 2).y : 2 * p2 - p1
         const t2 = t * t
         const t3 = t2 * t
         return (
@@ -146,7 +191,10 @@ export function CurveEditor({
   const dragCeil = useRef<'top' | 'bottom' | null>(null)
   const color = ALL_CHANNELS.find((c) => c.id === ch)!.color
   const isHue = isHueCh(ch)
-  const smooth = Boolean(values['crv_smooth'])
+  // Hue curves are always splined (DaVinci-style). With the reflected end
+  // tangents a flat or 2-point hue curve still reads as a straight line, so this
+  // only rounds off real bends. Tone curves follow the shared Spline toggle.
+  const smooth = isHue ? true : Boolean(values['crv_smooth'])
   // White ceiling (the top notch): remaps the curve output into [floor, ceil] =
   // [1-wht, wht], so dropping the ceiling raises the floor by the same amount.
   // Tone curves only. `span` is kept >0 for the inverse used while dragging.
@@ -164,14 +212,18 @@ export function CurveEditor({
   const engine = useEditor((s) => s.engine)
   const [histMode, setHistMode] = useState<HistMode>('input')
   const [hist, setHist] = useState<RgbHist | null>(null)
-  const histOn = histMode !== 'off' && !isHue
+  // Hue curves get a hue-distribution backdrop (which hues are present) rather
+  // than the tone curves' R/G/B levels, so you can see what you're editing.
+  const [hueHist, setHueHist] = useState<number[] | null>(null)
+  const histOn = histMode !== 'off'
 
   useEffect(() => {
     if (!engine || !histogramSource || !histOn) {
       setHist(null)
+      setHueHist(null)
       return undefined
     }
-    engine.setHistogramSource(histogramSource, histMode)
+    engine.setHistogramSource(histogramSource, histMode === 'output' ? 'output' : 'input')
     const live = { current: true }
     let busy = false
     let timer = 0
@@ -181,7 +233,15 @@ export function CurveEditor({
         busy = true
         try {
           const frame = await engine.sampleNodeInput(HIST_W, HIST_H)
-          if (live.current) setHist(frame ? histogramRGB(frame) : null)
+          if (live.current) {
+            if (isHue) {
+              setHueHist(frame ? histogramHue(frame) : null)
+              setHist(null)
+            } else {
+              setHist(frame ? histogramRGB(frame) : null)
+              setHueHist(null)
+            }
+          }
         } catch {
           /* readback hiccup — keep the last histogram */
         }
@@ -195,7 +255,7 @@ export function CurveEditor({
       window.clearTimeout(timer)
       engine.setHistogramSource(null)
     }
-  }, [engine, histogramSource, histMode, histOn])
+  }, [engine, histogramSource, histMode, histOn, isHue])
 
   // Filled area under a channel's (normalised) bins, in the viewBox; bottom-anchored.
   const histPoly = (bins: number[]) =>
@@ -288,6 +348,27 @@ export function CurveEditor({
     )
   }
 
+  // Eyedropper: while a hue curve is open, the Viewer lets you click the image to
+  // drop a neutral control point at that pixel's hue (then drag it to taste).
+  const addPickedHuePoint = (rgb: [number, number, number]) => {
+    if (!isHue || count >= MAX) return
+    const h = rgbToHue(rgb[0], rgb[1], rgb[2])
+    if (h === null) return
+    const nx = round(h)
+    if (pts.some((p) => Math.abs(p.x - nx) < 0.02)) return // a point already sits here
+    writePts([...pts, { x: nx, y: 0.5 }])
+  }
+  const setEyedropPick = useEditor((s) => s.setEyedropPick)
+  // Keep a live ref so the registered picker always sees the current points,
+  // without re-registering (and re-rendering the Viewer) on every edit.
+  const pickRef = useRef(addPickedHuePoint)
+  pickRef.current = addPickedHuePoint
+  useEffect(() => {
+    if (!isHue) return undefined
+    setEyedropPick((rgb) => pickRef.current(rgb))
+    return () => setEyedropPick(null)
+  }, [isHue, setEyedropPick])
+
   // Sample the (possibly splined) curve for the polyline, remapped by the ceiling.
   const line = Array.from({ length: 65 }, (_, k) => {
     const x = k / 64
@@ -346,34 +427,35 @@ export function CurveEditor({
           ))}
         </div>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() =>
+              setHistMode((m) => (m === 'input' ? 'output' : m === 'output' ? 'off' : 'input'))
+            }
+            className={cn(
+              'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
+              histMode !== 'off'
+                ? 'bg-muted text-foreground'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+            title="Histogram source: input → output → off"
+          >
+            {HIST_LABEL[histMode]}
+          </button>
+          {/* Hue curves are always splined, so the toggle only applies to tone. */}
           {!isHue && (
             <button
               type="button"
-              onClick={() =>
-                setHistMode((m) => (m === 'input' ? 'output' : m === 'output' ? 'off' : 'input'))
-              }
+              onClick={() => onChange({ crv_smooth: !smooth })}
               className={cn(
                 'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
-                histMode !== 'off'
-                  ? 'bg-muted text-foreground'
-                  : 'text-muted-foreground hover:text-foreground',
+                smooth ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
               )}
-              title="Histogram source: input → output → off"
+              title="Toggle spline (smooth) interpolation"
             >
-              {HIST_LABEL[histMode]}
+              Spline
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => onChange({ crv_smooth: !smooth })}
-            className={cn(
-              'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
-              smooth ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
-            )}
-            title="Toggle spline (smooth) interpolation"
-          >
-            Spline
-          </button>
           <button
             type="button"
             onClick={reset}
@@ -436,6 +518,14 @@ export function CurveEditor({
               opacity={0.14}
               pointerEvents="none"
             />
+            {hueHist && (
+              <polygon
+                points={histPoly(hueHist)}
+                fill="rgba(255,255,255,0.22)"
+                stroke="none"
+                pointerEvents="none"
+              />
+            )}
           </>
         ) : (
           hist && (
@@ -569,7 +659,7 @@ export function CurveEditor({
       </svg>
       <p className="text-[10px] text-muted-foreground">
         {isHue
-          ? 'x = source hue · drag to shift hue / sat / luma · right-click to remove'
+          ? 'x = source hue · drag to shift · click the image to drop a point · right-click to remove'
           : 'Click + drag to add · right-click to remove · Spline for curves'}
       </p>
     </div>

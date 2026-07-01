@@ -357,14 +357,23 @@ function drawLevelScale(ctx: CanvasRenderingContext2D) {
 }
 
 function drawVectorscope(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray) {
+  // Density plus a per-bin colour sum, so the trace is tinted by the actual hue
+  // of the pixels landing there (red toward the R target, etc.) rather than a
+  // flat monochrome glow — a real vectorscope shows all colours, not one.
   const acc = new Float32Array(OW * OH)
+  const sumR = new Float32Array(OW * OH)
+  const sumG = new Float32Array(OW * OH)
+  const sumB = new Float32Array(OW * OH)
   const cx = OW / 2
   const cy = OH / 2
   const scale = OH * 0.9 // 0.5 chroma maps near the edge
   for (let i = 0; i < data.length; i += 4) {
-    const rr = (data[i] ?? 0) / 255
-    const gg = (data[i + 1] ?? 0) / 255
-    const bb = (data[i + 2] ?? 0) / 255
+    const r = data[i] ?? 0
+    const g = data[i + 1] ?? 0
+    const b = data[i + 2] ?? 0
+    const rr = r / 255
+    const gg = g / 255
+    const bb = b / 255
     const cb = -0.168736 * rr - 0.331264 * gg + 0.5 * bb
     const cr = 0.5 * rr - 0.418688 * gg - 0.081312 * bb
     const ox = (cx + cb * scale) | 0
@@ -372,6 +381,13 @@ function drawVectorscope(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray)
     if (ox >= 0 && ox < OW && oy >= 0 && oy < OH) {
       const idx = oy * OW + ox
       acc[idx] = (acc[idx] ?? 0) + 1
+      // Vivid hue for the trace: lift each pixel to full value so dark, saturated
+      // pixels still read as their colour (grays sit at the centre regardless).
+      const mx = Math.max(r, g, b) || 1
+      const k = 255 / mx
+      sumR[idx] = (sumR[idx] ?? 0) + r * k
+      sumG[idx] = (sumG[idx] ?? 0) + g * k
+      sumB[idx] = (sumB[idx] ?? 0) + b * k
     }
   }
   ctx.fillStyle = '#0a0a0a'
@@ -385,7 +401,31 @@ function drawVectorscope(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray)
   ctx.moveTo(cx, cy - OH * 0.45)
   ctx.lineTo(cx, cy + OH * 0.45)
   ctx.stroke()
-  renderIntensity(ctx, acc, [180, 255, 180], false)
+
+  let max = 1
+  for (let i = 0; i < acc.length; i++) {
+    const a = acc[i]
+    if (a !== undefined && a > max) max = a
+  }
+  const img = ctx.getImageData(0, 0, OW, OH)
+  const px = img.data
+  const norm = 1 / Math.log1p(max)
+  for (let i = 0; i < acc.length; i++) {
+    const v = acc[i]
+    if (v === undefined || v === 0) continue
+    const a = Math.min(1, Math.log1p(v) * norm * 2.2)
+    const o = i * 4
+    const p0 = px[o]
+    const p1 = px[o + 1]
+    const p2 = px[o + 2]
+    if (p0 === undefined || p1 === undefined || p2 === undefined) continue
+    // Mean vivid colour of the pixels in this bin, scaled by trace intensity.
+    px[o] = Math.min(255, p0 + ((sumR[i] ?? 0) / v) * a)
+    px[o + 1] = Math.min(255, p1 + ((sumG[i] ?? 0) / v) * a)
+    px[o + 2] = Math.min(255, p2 + ((sumB[i] ?? 0) / v) * a)
+    px[o + 3] = 255
+  }
+  ctx.putImageData(img, 0, 0)
 }
 
 const REC709_LUMA = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b
@@ -462,43 +502,6 @@ function drawClipping(ctx: CanvasRenderingContext2D, data: Uint8ClampedArray) {
       }
       px[oi + 3] = 255
     }
-  }
-  ctx.putImageData(img, 0, 0)
-}
-
-/** Map an accumulation buffer to a glowing monochrome image and blit it. */
-function renderIntensity(
-  ctx: CanvasRenderingContext2D,
-  acc: Float32Array,
-  [cr, cg, cb]: [number, number, number],
-  clear = true,
-) {
-  if (clear) {
-    ctx.fillStyle = '#0a0a0a'
-    ctx.fillRect(0, 0, OW, OH)
-    drawGrid(ctx)
-  }
-  let max = 1
-  for (let i = 0; i < acc.length; i++) {
-    const a = acc[i]
-    if (a !== undefined && a > max) max = a
-  }
-  const img = ctx.getImageData(0, 0, OW, OH)
-  const px = img.data
-  const norm = 1 / Math.log1p(max)
-  for (let i = 0; i < acc.length; i++) {
-    const v = acc[i]
-    if (v === undefined || v === 0) continue
-    const a = Math.min(1, Math.log1p(v) * norm * 2.2)
-    const o = i * 4
-    const p0 = px[o]
-    const p1 = px[o + 1]
-    const p2 = px[o + 2]
-    if (p0 === undefined || p1 === undefined || p2 === undefined) continue
-    px[o] = Math.min(255, p0 + cr * a)
-    px[o + 1] = Math.min(255, p1 + cg * a)
-    px[o + 2] = Math.min(255, p2 + cb * a)
-    px[o + 3] = 255
   }
   ctx.putImageData(img, 0, 0)
 }
