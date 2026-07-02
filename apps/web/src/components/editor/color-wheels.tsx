@@ -1,3 +1,4 @@
+import { InfoDecorator } from './info-decorator'
 import { useRef } from 'react'
 import { type NodeDef, PRIMARY_SLIDERS } from '@grade/nodes'
 import { RotateCcw } from 'lucide-react'
@@ -168,7 +169,9 @@ function Wheel({
   return (
     <div className="flex flex-col items-center gap-2">
       <div className="flex w-full items-center justify-between px-1">
-        <span className="text-[11px] font-medium">{label}</span>
+        <InfoDecorator descKey={prefix}>
+          <span className="text-[11px] font-medium">{label}</span>
+        </InfoDecorator>
         <button
           type="button"
           onClick={reset}

@@ -268,6 +268,8 @@ interface EditorState {
   setFxLut: (nodeId: string, fxId: string, lut: LoadedLut | null) => void
   addFx: (nodeId: string, type: string) => void
   removeFx: (nodeId: string, fxId: string) => void
+  infoMode: boolean
+  setInfoMode: (on: boolean) => void
   setCommandOpen: (open: boolean) => void
   setVideo: (video: HTMLVideoElement | null) => void
   setCanvas: (canvas: HTMLCanvasElement | null) => void
@@ -357,6 +359,7 @@ export const useEditor = create<EditorState>((set, get) => {
     activeFxId: null,
     commandOpen: false,
     video: null,
+    infoMode: false,
     canvas: null,
     engine: null,
     eyedropPick: null,
@@ -552,6 +555,7 @@ export const useEditor = create<EditorState>((set, get) => {
     },
 
     setCommandOpen: (open) => set({ commandOpen: open }),
+    setInfoMode: (on) => set({ infoMode: on }),
     setVideo: (video) => set({ video }),
     setCanvas: (canvas) => set({ canvas }),
     setEngine: (engine) => set({ engine }),

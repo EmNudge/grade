@@ -64,6 +64,20 @@ export function useShortcuts() {
       // so text fields keep their native undo/redo and shortcuts.
       if (isEditable(e.target) || useEditor.getState().commandOpen) return
 
+      // I — toggle info mode (hover to see surface descriptions).
+      if (e.code === 'KeyI' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault()
+        useEditor.getState().setInfoMode(!useEditor.getState().infoMode)
+        return
+      }
+
+      // Escape — exit info mode.
+      if (e.code === 'Escape' && useEditor.getState().infoMode) {
+        e.preventDefault()
+        useEditor.getState().setInfoMode(false)
+        return
+      }
+
       // ⌘Z / Ctrl+Z — undo;  ⌘⇧Z / Ctrl+Y — redo.
       if ((e.metaKey || e.ctrlKey) && e.code === 'KeyZ') {
         e.preventDefault()

@@ -1,3 +1,4 @@
+import { InfoDecorator } from './info-decorator'
 import { useEffect, useRef, useState } from 'react'
 import { CURVE_MAX } from '@grade/nodes'
 import { RotateCcw } from 'lucide-react'
@@ -512,20 +513,31 @@ export function CurveEditor({
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-y-1">
         <div className="flex flex-wrap items-center gap-1">
-          {CHANNELS.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              onClick={() => setCh(c.id)}
-              className={cn(
-                'size-6 rounded text-[11px] font-medium transition-colors',
-                ch === c.id ? 'bg-muted' : 'text-muted-foreground hover:text-foreground',
-              )}
-              style={ch === c.id ? { color: c.color } : undefined}
-            >
-              {c.label}
-            </button>
-          ))}
+          {CHANNELS.map((c) => {
+            const curveKey =
+              c.id === 'm'
+                ? 'luma_curve'
+                : c.id === 'r'
+                  ? 'red_curve'
+                  : c.id === 'g'
+                    ? 'green_curve'
+                    : 'blue_curve'
+            return (
+              <InfoDecorator descKey={curveKey} key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => setCh(c.id)}
+                  className={cn(
+                    'size-6 rounded text-[11px] font-medium transition-colors',
+                    ch === c.id ? 'bg-muted' : 'text-muted-foreground hover:text-foreground',
+                  )}
+                  style={ch === c.id ? { color: c.color } : undefined}
+                >
+                  {c.label}
+                </button>
+              </InfoDecorator>
+            )
+          })}
           <span className="mx-0.5 h-4 w-px bg-border" />
           {HUE_CURVES.map((c) => (
             <button
@@ -591,7 +603,7 @@ export function CurveEditor({
           </button>
           {/* Hue curves are always splined, so the toggle only applies to tone. */}
           {!isHue && (
-            <>
+            <InfoDecorator descKey="curve_smooth" key="spline">
               <button
                 type="button"
                 onClick={() => onChange({ crv_smooth: !smooth })}
@@ -605,7 +617,7 @@ export function CurveEditor({
               >
                 Spline
               </button>
-            </>
+            </InfoDecorator>
           )}
           <button
             type="button"

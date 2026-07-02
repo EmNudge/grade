@@ -1,3 +1,4 @@
+import { InfoDecorator } from './info-decorator'
 import type { Engine } from '@grade/engine'
 import { CHROMA_PT_MAX } from '@grade/nodes'
 import { Plus, RotateCcw, Trash2 } from 'lucide-react'
@@ -285,7 +286,9 @@ export function ChromaWarp({
   return (
     <div className="flex flex-col items-center gap-3 p-1">
       <div className="flex w-full items-center justify-between">
-        <span className="text-[11px] text-muted-foreground">Chroma Warp</span>
+        <InfoDecorator descKey="chroma">
+          <span className="text-[11px] text-muted-foreground">Chroma Warp</span>
+        </InfoDecorator>
         <button
           type="button"
           onClick={resetAll}

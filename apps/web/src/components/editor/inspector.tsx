@@ -9,8 +9,7 @@ import { type FxInstance, type LoadedLut, type NodeValues, useEditor } from '../
 import { ChromaWarp } from './chroma-warp'
 import { ColorWheels } from './color-wheels'
 import { CurveEditor } from './curve-editor'
-import { DESCRIPTIONS } from './descriptions'
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '../ui/context-menu'
+import { InfoDecorator } from './info-decorator'
 import { Button } from '../ui/button'
 import {
   DropdownMenu,
@@ -71,50 +70,26 @@ export function Inspector() {
       {/* One flat tab row: the corrector views on the left, FX bin pinned right. */}
       <div className="border-b border-border px-2 py-1.5">
         <TabsList variant="line" className="h-auto w-full justify-start gap-1">
-          <ContextMenu>
-            <ContextMenuTrigger render={<TabsTrigger value="primaries" className="flex-none" />}>
+          <InfoDecorator descKey="primaries">
+            <TabsTrigger value="primaries" className="flex-none">
               Primaries
-            </ContextMenuTrigger>
-            <ContextMenuContent>
-              <p className="px-2 py-1 text-xs font-medium">About Primaries</p>
-              <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
-                {DESCRIPTIONS['primaries']}
-              </div>
-            </ContextMenuContent>
-          </ContextMenu>
-          <ContextMenu>
-            <ContextMenuTrigger render={<TabsTrigger value="hdr" className="flex-none" />}>
+            </TabsTrigger>
+          </InfoDecorator>
+          <InfoDecorator descKey="hdr">
+            <TabsTrigger value="hdr" className="flex-none">
               HDR
-            </ContextMenuTrigger>
-            <ContextMenuContent>
-              <p className="px-2 py-1 text-xs font-medium">About HDR</p>
-              <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
-                {DESCRIPTIONS['hdr']}
-              </div>
-            </ContextMenuContent>
-          </ContextMenu>
-          <ContextMenu>
-            <ContextMenuTrigger render={<TabsTrigger value="curves" className="flex-none" />}>
+            </TabsTrigger>
+          </InfoDecorator>
+          <InfoDecorator descKey="curves">
+            <TabsTrigger value="curves" className="flex-none">
               Curves
-            </ContextMenuTrigger>
-            <ContextMenuContent>
-              <p className="px-2 py-1 text-xs font-medium">About Curves</p>
-              <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
-                {DESCRIPTIONS['curves']}
-              </div>
-            </ContextMenuContent>
-          </ContextMenu>
-          <ContextMenu>
-            <ContextMenuTrigger render={<TabsTrigger value="chroma" className="flex-none" />}>
+            </TabsTrigger>
+          </InfoDecorator>
+          <InfoDecorator descKey="chroma">
+            <TabsTrigger value="chroma" className="flex-none">
               Chroma Warp
-            </ContextMenuTrigger>
-            <ContextMenuContent>
-              <p className="px-2 py-1 text-xs font-medium">About Chroma Warp</p>
-              <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
-                {DESCRIPTIONS['chroma']}
-              </div>
-            </ContextMenuContent>
-          </ContextMenu>
+            </TabsTrigger>
+          </InfoDecorator>
           <TabsTrigger value="fx" className="ml-auto min-w-0 max-w-[220px] flex-none justify-start">
             <span className="truncate">{fxTabLabel(extraFx)}</span>
           </TabsTrigger>
@@ -256,17 +231,9 @@ function FxPanel({
           className="size-2 shrink-0 rounded-full"
           style={{ background: def.accent ?? 'var(--muted-foreground)' }}
         />
-        <ContextMenu>
-          <ContextMenuTrigger render={<span className="text-xs font-medium" />}>
-            {def.label}
-          </ContextMenuTrigger>
-          <ContextMenuContent>
-            <p className="px-2 py-1 text-xs font-medium">About {def.label}</p>
-            <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
-              {DESCRIPTIONS[def.type]}
-            </div>
-          </ContextMenuContent>
-        </ContextMenu>
+        <InfoDecorator descKey={def.type}>
+          <span className="text-xs font-medium">{def.label}</span>
+        </InfoDecorator>
         {onRemove && (
           <button
             type="button"

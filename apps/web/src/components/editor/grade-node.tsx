@@ -1,3 +1,4 @@
+import { InfoDecorator } from './info-decorator'
 import { Handle, type NodeProps, Position } from '@xyflow/react'
 import { registry } from '../../editor/registry'
 import { type GradeNode as GradeNodeType, useEditor } from '../../editor/store'
@@ -23,7 +24,9 @@ export function GradeNodeView({ id, data }: NodeProps<GradeNodeType>) {
           background: `color-mix(in oklch, ${accent} 16%, var(--card))`,
         }}
       >
-        <span className="truncate">{def?.label ?? data.role}</span>
+        <InfoDecorator descKey="grade-node">
+          <span className="truncate">{def?.label ?? data.role}</span>
+        </InfoDecorator>
         {data.role === 'input' && (
           <Handle type="source" position={Position.Right} className={handleClass} />
         )}
@@ -59,9 +62,11 @@ export function GradeNodeView({ id, data }: NodeProps<GradeNodeType>) {
             background: disabled ? 'var(--muted-foreground)' : (data.accent ?? CORRECTOR_ACCENT),
           }}
         />
-        <span className={cn('truncate', disabled && 'line-through')}>
-          {data.label ?? 'Corrector'}
-        </span>
+        <InfoDecorator descKey="grade-node">
+          <span className={cn('truncate', disabled && 'line-through')}>
+            {data.label ?? 'Corrector'}
+          </span>
+        </InfoDecorator>
         {data.fx.length > 1 && (
           <span className="ml-auto rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
             {data.fx.length} FX

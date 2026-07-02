@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
-import { ChevronDown, Redo2, Undo2 } from 'lucide-react'
+import { ChevronDown, CircleHelp, Redo2, Undo2 } from 'lucide-react'
 import { useEditor } from '../../editor/store'
 import { useProjectActions } from '../../editor/use-project-actions'
 import { useShortcuts } from '../../editor/use-shortcuts'
@@ -39,6 +39,8 @@ export function Editor() {
   const canUndo = useEditor((s) => s.past.length > 0)
   const canRedo = useEditor((s) => s.future.length > 0)
   const { restoreLast } = useProjectActions()
+  const infoMode = useEditor((s) => s.infoMode)
+  const setInfoMode = useEditor((s) => s.setInfoMode)
 
   // On startup, offer to reopen the most recently used project. Lives here (an
   // always-mounted shell) rather than in the Project menu, which mounts lazily.
@@ -77,7 +79,17 @@ export function Editor() {
               <TemplatesMenu />
             </DropdownMenuContent>
           </DropdownMenu>
-          <div className="ml-auto md:ml-3">
+          <Button
+            size="sm"
+            variant={infoMode ? 'default' : 'ghost'}
+            className="h-7 gap-1.5 px-2"
+            onClick={() => setInfoMode(!infoMode)}
+            title={`Info mode (I) — ${infoMode ? 'active, Esc to exit' : 'hover surfaces to see descriptions'}`}
+          >
+            <CircleHelp className="size-3.5" />
+            <span className="hidden md:inline text-xs">Info</span>
+          </Button>
+          <div className="md:ml-3">
             <ExportDialog />
           </div>
         </header>
