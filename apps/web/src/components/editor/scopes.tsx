@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import type { Engine } from '@grade/engine'
 import { useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
-import { InfoTip } from './info-tip'
 
 type ScopeMode = 'histogram' | 'rgbwave' | 'waveform' | 'vectorscope' | 'falsecolor' | 'clipping'
 
@@ -155,7 +154,6 @@ export function Scopes() {
             {m.label}
           </button>
         ))}
-        <InfoTip descKey={mode} side="bottom" />
       </div>
       <div className="flex min-h-0 flex-1 items-center justify-center p-3">
         <canvas

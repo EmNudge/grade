@@ -4,7 +4,6 @@ import { Plus, RotateCcw, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor } from '../../editor/store'
 import type { NodeValues } from '../../editor/store'
-import { InfoTip } from './info-tip'
 
 const SIZE = 260
 const C = SIZE / 2
@@ -287,7 +286,6 @@ export function ChromaWarp({
     <div className="flex flex-col items-center gap-3 p-1">
       <div className="flex w-full items-center justify-between">
         <span className="text-[11px] text-muted-foreground">Chroma Warp</span>
-        <InfoTip descKey="chroma" side="bottom" />
         <button
           type="button"
           onClick={resetAll}

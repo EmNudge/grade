@@ -2,7 +2,6 @@ import { Handle, type NodeProps, Position } from '@xyflow/react'
 import { registry } from '../../editor/registry'
 import { type GradeNode as GradeNodeType, useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
-import { InfoTip } from './info-tip'
 
 const handleClass = '!size-3 !border-2 !border-background !bg-muted-foreground'
 const CORRECTOR_ACCENT = '#f59e0b'
@@ -25,7 +24,6 @@ export function GradeNodeView({ id, data }: NodeProps<GradeNodeType>) {
         }}
       >
         <span className="truncate">{def?.label ?? data.role}</span>
-        <InfoTip descKey="grade-node" side="bottom" />
         {data.role === 'input' && (
           <Handle type="source" position={Position.Right} className={handleClass} />
         )}
@@ -64,7 +62,6 @@ export function GradeNodeView({ id, data }: NodeProps<GradeNodeType>) {
         <span className={cn('truncate', disabled && 'line-through')}>
           {data.label ?? 'Corrector'}
         </span>
-        <InfoTip descKey="grade-node" side="bottom" />
         {data.fx.length > 1 && (
           <span className="ml-auto rounded bg-muted px-1.5 text-[10px] text-muted-foreground">
             {data.fx.length} FX

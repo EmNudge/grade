@@ -4,7 +4,6 @@ import { RotateCcw } from 'lucide-react'
 import { Slider } from '../../components/ui/slider'
 import { type NodeValues, useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
-import { InfoTip } from './info-tip'
 
 // The shader's per-curve control-point cap (x0..x{N-1}); kept in lockstep by
 // importing the same constant the kernel is generated from.
@@ -573,18 +572,6 @@ export function CurveEditor({
               {c.label}
             </button>
           ))}
-          <InfoTip
-            descKey={
-              ch === 'm'
-                ? 'luma_curve'
-                : ch === 'r'
-                  ? 'red_curve'
-                  : ch === 'g'
-                    ? 'green_curve'
-                    : 'blue_curve'
-            }
-            side="bottom"
-          />
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -618,7 +605,6 @@ export function CurveEditor({
               >
                 Spline
               </button>
-              <InfoTip descKey="curve_smooth" side="bottom" />
             </>
           )}
           <button

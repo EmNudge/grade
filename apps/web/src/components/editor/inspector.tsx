@@ -9,7 +9,13 @@ import { type FxInstance, type LoadedLut, type NodeValues, useEditor } from '../
 import { ChromaWarp } from './chroma-warp'
 import { ColorWheels } from './color-wheels'
 import { CurveEditor } from './curve-editor'
-import { InfoTip } from './info-tip'
+import { DESCRIPTIONS } from './descriptions'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuLabel,
+  ContextMenuTrigger,
+} from '../ui/context-menu'
 import { Button } from '../ui/button'
 import {
   DropdownMenu,
@@ -70,18 +76,50 @@ export function Inspector() {
       {/* One flat tab row: the corrector views on the left, FX bin pinned right. */}
       <div className="border-b border-border px-2 py-1.5">
         <TabsList variant="line" className="h-auto w-full justify-start gap-1">
-          <TabsTrigger value="primaries" className="flex-none">
-            Primaries <InfoTip descKey="primaries" side="bottom" />
-          </TabsTrigger>
-          <TabsTrigger value="hdr" className="flex-none">
-            HDR <InfoTip descKey="hdr" side="bottom" />
-          </TabsTrigger>
-          <TabsTrigger value="curves" className="flex-none">
-            Curves <InfoTip descKey="curves" side="bottom" />
-          </TabsTrigger>
-          <TabsTrigger value="chroma" className="flex-none">
-            Chroma Warp <InfoTip descKey="chroma" side="bottom" />
-          </TabsTrigger>
+          <ContextMenu>
+            <ContextMenuTrigger render={<TabsTrigger value="primaries" className="flex-none" />}>
+              Primaries
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuLabel className="font-medium">About Primaries</ContextMenuLabel>
+              <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
+                {DESCRIPTIONS['primaries']}
+              </div>
+            </ContextMenuContent>
+          </ContextMenu>
+          <ContextMenu>
+            <ContextMenuTrigger render={<TabsTrigger value="hdr" className="flex-none" />}>
+              HDR
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuLabel className="font-medium">About HDR</ContextMenuLabel>
+              <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
+                {DESCRIPTIONS['hdr']}
+              </div>
+            </ContextMenuContent>
+          </ContextMenu>
+          <ContextMenu>
+            <ContextMenuTrigger render={<TabsTrigger value="curves" className="flex-none" />}>
+              Curves
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuLabel className="font-medium">About Curves</ContextMenuLabel>
+              <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
+                {DESCRIPTIONS['curves']}
+              </div>
+            </ContextMenuContent>
+          </ContextMenu>
+          <ContextMenu>
+            <ContextMenuTrigger render={<TabsTrigger value="chroma" className="flex-none" />}>
+              Chroma Warp
+            </ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuLabel className="font-medium">About Chroma Warp</ContextMenuLabel>
+              <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
+                {DESCRIPTIONS['chroma']}
+              </div>
+            </ContextMenuContent>
+          </ContextMenu>
           <TabsTrigger value="fx" className="ml-auto min-w-0 max-w-[220px] flex-none justify-start">
             <span className="truncate">{fxTabLabel(extraFx)}</span>
           </TabsTrigger>
@@ -223,8 +261,17 @@ function FxPanel({
           className="size-2 shrink-0 rounded-full"
           style={{ background: def.accent ?? 'var(--muted-foreground)' }}
         />
-        <span className="text-xs font-medium">{def.label}</span>
-        <InfoTip descKey={def.type} side="bottom" />
+        <ContextMenu>
+          <ContextMenuTrigger render={<span className="text-xs font-medium" />}>
+            {def.label}
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuLabel className="font-medium">About {def.label}</ContextMenuLabel>
+            <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
+              {DESCRIPTIONS[def.type]}
+            </div>
+          </ContextMenuContent>
+        </ContextMenu>
         {onRemove && (
           <button
             type="button"
