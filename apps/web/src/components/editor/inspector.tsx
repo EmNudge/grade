@@ -10,12 +10,7 @@ import { ChromaWarp } from './chroma-warp'
 import { ColorWheels } from './color-wheels'
 import { CurveEditor } from './curve-editor'
 import { DESCRIPTIONS } from './descriptions'
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuLabel,
-  ContextMenuTrigger,
-} from '../ui/context-menu'
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '../ui/context-menu'
 import { Button } from '../ui/button'
 import {
   DropdownMenu,
@@ -81,7 +76,7 @@ export function Inspector() {
               Primaries
             </ContextMenuTrigger>
             <ContextMenuContent>
-              <ContextMenuLabel className="font-medium">About Primaries</ContextMenuLabel>
+              <p className="px-2 py-1 text-xs font-medium">About Primaries</p>
               <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
                 {DESCRIPTIONS['primaries']}
               </div>
@@ -92,7 +87,7 @@ export function Inspector() {
               HDR
             </ContextMenuTrigger>
             <ContextMenuContent>
-              <ContextMenuLabel className="font-medium">About HDR</ContextMenuLabel>
+              <p className="px-2 py-1 text-xs font-medium">About HDR</p>
               <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
                 {DESCRIPTIONS['hdr']}
               </div>
@@ -103,7 +98,7 @@ export function Inspector() {
               Curves
             </ContextMenuTrigger>
             <ContextMenuContent>
-              <ContextMenuLabel className="font-medium">About Curves</ContextMenuLabel>
+              <p className="px-2 py-1 text-xs font-medium">About Curves</p>
               <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
                 {DESCRIPTIONS['curves']}
               </div>
@@ -114,7 +109,7 @@ export function Inspector() {
               Chroma Warp
             </ContextMenuTrigger>
             <ContextMenuContent>
-              <ContextMenuLabel className="font-medium">About Chroma Warp</ContextMenuLabel>
+              <p className="px-2 py-1 text-xs font-medium">About Chroma Warp</p>
               <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
                 {DESCRIPTIONS['chroma']}
               </div>
@@ -266,7 +261,7 @@ function FxPanel({
             {def.label}
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <ContextMenuLabel className="font-medium">About {def.label}</ContextMenuLabel>
+            <p className="px-2 py-1 text-xs font-medium">About {def.label}</p>
             <div className="max-w-64 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
               {DESCRIPTIONS[def.type]}
             </div>
