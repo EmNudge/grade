@@ -168,7 +168,7 @@ function band(
 }
 
 /** Max control points per curve channel. Default curve is 2 points (linear). */
-export const CURVE_MAX = 16
+export const CURVE_MAX = 8
 function curvePts(channel: string): ParamDef[] {
   const out: ParamDef[] = [
     {
@@ -485,6 +485,9 @@ export const COLOR_CORRECT_NODE: NodeDef = {
     ...huePts('hh'),
     ...huePts('hs'),
     ...huePts('hl'),
+    ...huePts('ls'),
+    ...huePts('ss'),
+    ...huePts('sl'),
     ...primarySliders(),
     ...chromaParams(),
   ],
@@ -521,9 +524,16 @@ export const COLOR_CORRECT_NODE: NodeDef = {
               let p3 = select(2.0 * p2 - p1, ys[min(i + 2, cnt - 1)], i + 2 <= cnt - 1);
               let t2 = t * t;
               let t3 = t2 * t;
-              return 0.5 * ((2.0 * p1) + (-p0 + p2) * t
-                + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
-                + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
+              // Reduced-tension Catmull-Rom (tension 0.5 → tangents halved)
+              // converted to Hermite form for clarity: m0 and m1 are the
+              // endpoint tangent vectors, scaled down so the curve doesn't
+              // overshoot or look pointy between nodes.
+              let m0 = (p2 - p0) * 0.25;
+              let m1 = (p3 - p1) * 0.25;
+              return p1 * (2.0 * t3 - 3.0 * t2 + 1.0)
+                   + m0 * (t3 - 2.0 * t2 + t)
+                   + p2 * (-2.0 * t3 + 3.0 * t2)
+                   + m1 * (t3 - t2);
             }
             return mix(ys[i], ys[i + 1], t);
           }
@@ -640,17 +650,22 @@ export const COLOR_CORRECT_NODE: NodeDef = {
         color = grade_hsv2rgb(hsv);
       }
 
-      // Hue curves (DaVinci's Hue vs Hue / Hue vs Sat / Hue vs Lum). The curve's
-      // x-axis is the pixel's hue; its output (centred at 0.5 = neutral) rotates
-      // hue, scales saturation, or scales luminance. Flat 0.5 -> a no-op.
+      // Hue curves (Hue vs Hue / Sat / Lum) and Luma/Sat curves (Lum vs Sat,
+      // Sat vs Sat, Sat vs Lum). The curve's x-axis is the pixel's hue, luma,
+      // or saturation; its output (centred at 0.5 = neutral) shifts hue, scales
+      // saturation, or scales luminance. Flat 0.5 -> a no-op.
       var hcHsv = grade_rgb2hsv(max(color, vec3<f32>(0.0)));
       let hcH = hcHsv.x;
       let hcHueShift = ${curveCall('hh', 'hcH', '1.0')} - 0.5; // ±0.5 turn = ±180°
       let hcSat = ${curveCall('hs', 'hcH', '1.0')} * 2.0; // 0.5 -> ×1
       let hcLum = ${curveCall('hl', 'hcH', '1.0')} * 2.0; // 0.5 -> ×1
+      let luma = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+      let lsMul = ${curveCall('ls', 'luma', '1.0')} * 2.0;
+      let ssMul = ${curveCall('ss', 'hcHsv.y', '1.0')} * 2.0;
+      let slMul = ${curveCall('sl', 'hcHsv.y', '1.0')} * 2.0;
       hcHsv.x = fract(hcHsv.x + hcHueShift);
-      hcHsv.y = clamp(hcHsv.y * hcSat, 0.0, 1.0);
-      hcHsv.z = clamp(hcHsv.z * hcLum, 0.0, 4.0);
+      hcHsv.y = clamp(hcHsv.y * hcSat * lsMul * ssMul, 0.0, 1.0);
+      hcHsv.z = clamp(hcHsv.z * hcLum * slMul, 0.0, 4.0);
       color = grade_hsv2rgb(hcHsv);
     `,
   },
