@@ -9,6 +9,7 @@ import { type FxInstance, type LoadedLut, type NodeValues, useEditor } from '../
 import { ChromaWarp } from './chroma-warp'
 import { ColorWheels } from './color-wheels'
 import { CurveEditor } from './curve-editor'
+import { InfoDecorator } from './info-decorator'
 import { Button } from '../ui/button'
 import {
   DropdownMenu,
@@ -69,18 +70,26 @@ export function Inspector() {
       {/* One flat tab row: the corrector views on the left, FX bin pinned right. */}
       <div className="border-b border-border px-2 py-1.5">
         <TabsList variant="line" className="h-auto w-full justify-start gap-1">
-          <TabsTrigger value="primaries" className="flex-none">
-            Primaries
-          </TabsTrigger>
-          <TabsTrigger value="hdr" className="flex-none">
-            HDR
-          </TabsTrigger>
-          <TabsTrigger value="curves" className="flex-none">
-            Curves
-          </TabsTrigger>
-          <TabsTrigger value="chroma" className="flex-none">
-            Chroma Warp
-          </TabsTrigger>
+          <InfoDecorator descKey="primaries">
+            <TabsTrigger value="primaries" className="flex-none">
+              Primaries
+            </TabsTrigger>
+          </InfoDecorator>
+          <InfoDecorator descKey="hdr">
+            <TabsTrigger value="hdr" className="flex-none">
+              HDR
+            </TabsTrigger>
+          </InfoDecorator>
+          <InfoDecorator descKey="curves">
+            <TabsTrigger value="curves" className="flex-none">
+              Curves
+            </TabsTrigger>
+          </InfoDecorator>
+          <InfoDecorator descKey="chroma">
+            <TabsTrigger value="chroma" className="flex-none">
+              Chroma Warp
+            </TabsTrigger>
+          </InfoDecorator>
           <TabsTrigger value="fx" className="ml-auto min-w-0 max-w-[220px] flex-none justify-start">
             <span className="truncate">{fxTabLabel(extraFx)}</span>
           </TabsTrigger>
@@ -222,7 +231,9 @@ function FxPanel({
           className="size-2 shrink-0 rounded-full"
           style={{ background: def.accent ?? 'var(--muted-foreground)' }}
         />
-        <span className="text-xs font-medium">{def.label}</span>
+        <InfoDecorator descKey={def.type}>
+          <span className="text-xs font-medium">{def.label}</span>
+        </InfoDecorator>
         {onRemove && (
           <button
             type="button"

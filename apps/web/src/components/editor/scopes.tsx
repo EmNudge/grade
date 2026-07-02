@@ -1,3 +1,4 @@
+import { InfoDecorator } from './info-decorator'
 import { useEffect, useRef, useState } from 'react'
 import type { Engine } from '@grade/engine'
 import { useEditor } from '../../editor/store'
@@ -140,19 +141,20 @@ export function Scopes() {
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 border-b border-border px-2 py-1.5">
         {MODES.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            onClick={() => setMode(m.id)}
-            className={cn(
-              'rounded px-2 py-1 text-[11px] transition-colors',
-              mode === m.id
-                ? 'bg-muted text-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            {m.label}
-          </button>
+          <InfoDecorator descKey={m.id} key={m.id}>
+            <button
+              type="button"
+              onClick={() => setMode(m.id)}
+              className={cn(
+                'rounded px-2 py-1 text-[11px] transition-colors',
+                mode === m.id
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {m.label}
+            </button>
+          </InfoDecorator>
         ))}
       </div>
       <div className="flex min-h-0 flex-1 items-center justify-center p-3">
