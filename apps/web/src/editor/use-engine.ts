@@ -72,13 +72,23 @@ export function useEngine(
   }, [structureKey])
 
   // Live-push parameter edits without recompiling pipelines. Each FX in a
-  // node's stack is its own engine pass, keyed `${nodeId}:${fxId}`.
+  // node's stack is its own engine pass, keyed `${nodeId}:${fxId}`. Only
+  // pushes FX whose values actually changed (detected by JSON-hash), so a
+  // slider/curve drag doesn't repack every FX on every node for every tick.
   const nodes = useEditor((s) => s.nodes)
+  const valueHashes = useRef(new Map<string, string>())
   useEffect(() => {
     const engine = engineRef.current
     if (!engine) return
     for (const n of nodes) {
-      for (const fx of n.data.fx) engine.setNodeValues(`${n.id}:${fx.id}`, fx.values)
+      for (const fx of n.data.fx) {
+        const key = `${n.id}:${fx.id}`
+        const hash = JSON.stringify(fx.values)
+        if (valueHashes.current.get(key) !== hash) {
+          engine.setNodeValues(key, fx.values)
+          valueHashes.current.set(key, hash)
+        }
+      }
     }
   }, [nodes])
 
@@ -89,6 +99,7 @@ export function useEngine(
   const lastLut = useRef(new Map<string, LoadedLut | undefined>())
   useEffect(() => {
     lastLut.current.clear()
+    valueHashes.current.clear()
   }, [storeEngine])
   useEffect(() => {
     const engine = engineRef.current

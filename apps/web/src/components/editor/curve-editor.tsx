@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { CURVE_MAX } from '@grade/nodes'
 import { RotateCcw } from 'lucide-react'
+import { Slider } from '../../components/ui/slider'
 import { type NodeValues, useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
 
@@ -30,12 +31,25 @@ const HUE_CURVES = [
   { id: 'hl', label: 'Hue→Lum', color: '#e5e5e5' },
 ] as const
 
-const ALL_CHANNELS = [...CHANNELS, ...HUE_CURVES]
+// Y-based and saturation-based curves. These use the same `crv*_n` / `crv*_*i`
+// storage as hue curves, but the x-axis is luma or saturation instead of hue.
+const LUMA_CURVES = [{ id: 'ls', label: 'Lum→Sat', color: '#e5e5e5' }] as const
+
+const SAT_CURVES = [
+  { id: 'ss', label: 'Sat→Sat', color: '#e5e5e5' },
+  { id: 'sl', label: 'Sat→Lum', color: '#e5e5e5' },
+] as const
+
+const ALL_CHANNELS = [...CHANNELS, ...HUE_CURVES, ...LUMA_CURVES, ...SAT_CURVES]
 type Ch = (typeof ALL_CHANNELS)[number]['id']
-const isHueCh = (ch: Ch): boolean => ch === 'hh' || ch === 'hs' || ch === 'hl'
+const isHueCh = (ch: Ch): boolean =>
+  ch === 'hh' || ch === 'hs' || ch === 'hl' || ch === 'ls' || ch === 'ss' || ch === 'sl'
 
 // Rainbow stops for the hue-curve x-axis backdrop (red→…→red, one turn).
 const HUE_STOPS = ['#ff5a5a', '#ffd25a', '#5aff7d', '#5affff', '#5a7dff', '#d25aff', '#ff5a5a']
+
+// Greyscale stops for the lum/sat x-axis backdrops.
+const LUM_STOPS = ['#000000', '#404040', '#808080', '#bfbfbf', '#ffffff']
 interface Pt {
   x: number
   y: number
@@ -112,6 +126,23 @@ function rgbToHue(r: number, g: number, b: number): number | null {
 }
 
 /**
+ * Luma (0..1) of an 8-bit RGB triple using Rec.709 weights.
+ */
+function rgbToLuma(r: number, g: number, b: number): number {
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+}
+
+/**
+ * Saturation (0..1) of an 8-bit RGB triple — chroma / max.
+ */
+function rgbToSat(r: number, g: number, b: number): number {
+  const mx = Math.max(r, g, b)
+  const mn = Math.min(r, g, b)
+  const d = mx - mn
+  return mx > 0 ? d / mx : 0
+}
+
+/**
  * 256-bin hue distribution of a frame, each pixel weighted by its chroma so
  * vivid colours read louder than washed-out ones. Normalised to its own peak.
  * Drawn behind the hue curves as an x = hue backdrop.
@@ -128,6 +159,41 @@ function histogramHue(frame: Frame): number[] {
     if (h === null) continue
     const bin = Math.min(255, Math.floor(h * 256))
     bins[bin] = (bins[bin] ?? 0) + (Math.max(r, g, b) - Math.min(r, g, b)) / 255
+  }
+  let max = 1
+  for (let i = 0; i < 256; i++) max = Math.max(max, bins[i] ?? 0)
+  return Array.from(bins, (c) => Math.min(1, c / max))
+}
+
+function histogramLuma(frame: Frame): number[] {
+  const { data } = frame
+  const bgra = frame.format === 'BGRA'
+  const bins = new Float32Array(256)
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[bgra ? i + 2 : i] ?? 0
+    const g = data[i + 1] ?? 0
+    const b = data[bgra ? i : i + 2] ?? 0
+    const luma = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b)
+    bins[luma] = (bins[luma] ?? 0) + 1
+  }
+  let max = 1
+  for (let i = 0; i < 256; i++) max = Math.max(max, bins[i] ?? 0)
+  return Array.from(bins, (c) => Math.min(1, c / max))
+}
+
+function histogramSat(frame: Frame): number[] {
+  const { data } = frame
+  const bgra = frame.format === 'BGRA'
+  const bins = new Float32Array(256)
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[bgra ? i + 2 : i] ?? 0
+    const g = data[i + 1] ?? 0
+    const b = data[bgra ? i : i + 2] ?? 0
+    const mx = Math.max(r, g, b)
+    const mn = Math.min(r, g, b)
+    const d = mx - mn
+    const sat = mx > 0 ? Math.round((d / mx) * 255) : 0
+    bins[sat] = (bins[sat] ?? 0) + 1
   }
   let max = 1
   for (let i = 0; i < 256; i++) max = Math.max(max, bins[i] ?? 0)
@@ -156,12 +222,15 @@ function evalCurve(x: number, pts: Pt[], smooth: boolean): number {
         const p3 = i + 2 <= n - 1 ? at(i + 2).y : 2 * p2 - p1
         const t2 = t * t
         const t3 = t2 * t
+        // Reduced-tension Catmull-Rom (tension 0.5 → tangents halved) in
+        // Hermite form so the curve stays smooth without overshooting.
+        const m0 = (p2 - p0) * 0.25
+        const m1 = (p3 - p1) * 0.25
         return (
-          0.5 *
-          (2 * p1 +
-            (-p0 + p2) * t +
-            (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
-            (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
+          p1 * (2 * t3 - 3 * t2 + 1) +
+          m0 * (t3 - 2 * t2 + t) +
+          p2 * (-2 * t3 + 3 * t2) +
+          m1 * (t3 - t2)
         )
       }
       return a.y + (b.y - a.y) * t
@@ -215,12 +284,17 @@ export function CurveEditor({
   // Hue curves get a hue-distribution backdrop (which hues are present) rather
   // than the tone curves' R/G/B levels, so you can see what you're editing.
   const [hueHist, setHueHist] = useState<number[] | null>(null)
+  const [lumaHist, setLumaHist] = useState<number[] | null>(null)
+  const [satHist, setSatHist] = useState<number[] | null>(null)
+  const [activePt, setActivePt] = useState<number | null>(null)
   const histOn = histMode !== 'off'
 
   useEffect(() => {
     if (!engine || !histogramSource || !histOn) {
       setHist(null)
       setHueHist(null)
+      setLumaHist(null)
+      setSatHist(null)
       return undefined
     }
     engine.setHistogramSource(histogramSource, histMode === 'output' ? 'output' : 'input')
@@ -234,12 +308,26 @@ export function CurveEditor({
         try {
           const frame = await engine.sampleNodeInput(HIST_W, HIST_H)
           if (live.current) {
-            if (isHue) {
+            if (ch === 'hh' || ch === 'hs' || ch === 'hl') {
               setHueHist(frame ? histogramHue(frame) : null)
               setHist(null)
+              setLumaHist(null)
+              setSatHist(null)
+            } else if (ch === 'ls') {
+              setLumaHist(frame ? histogramLuma(frame) : null)
+              setHueHist(null)
+              setHist(null)
+              setSatHist(null)
+            } else if (ch === 'ss' || ch === 'sl') {
+              setSatHist(frame ? histogramSat(frame) : null)
+              setHueHist(null)
+              setHist(null)
+              setLumaHist(null)
             } else {
               setHist(frame ? histogramRGB(frame) : null)
               setHueHist(null)
+              setLumaHist(null)
+              setSatHist(null)
             }
           }
         } catch {
@@ -255,7 +343,7 @@ export function CurveEditor({
       window.clearTimeout(timer)
       engine.setHistogramSource(null)
     }
-  }, [engine, histogramSource, histMode, histOn, isHue])
+  }, [engine, histogramSource, histMode, histOn, ch])
 
   // Filled area under a channel's (normalised) bins, in the viewBox; bottom-anchored.
   const histPoly = (bins: number[]) =>
@@ -331,9 +419,12 @@ export function CurveEditor({
   const removePoint = (i: number) => {
     if (i === 0 || i === count - 1 || count <= 2) return
     writePts(pts.filter((_, k) => k !== i))
+    if (activePt === i) setActivePt(null)
+    else if (activePt !== null && activePt > i) setActivePt(activePt - 1)
   }
 
   const reset = () => {
+    setActivePt(null)
     if (!isHue) onChange({ [`crv${ch}_wht`]: 1 })
     writePts(
       isHue
@@ -348,26 +439,52 @@ export function CurveEditor({
     )
   }
 
-  // Eyedropper: while a hue curve is open, the Viewer lets you click the image to
-  // drop a neutral control point at that pixel's hue (then drag it to taste).
-  const addPickedHuePoint = (rgb: [number, number, number]) => {
-    if (!isHue || count >= MAX) return
-    const h = rgbToHue(rgb[0], rgb[1], rgb[2])
-    if (h === null) return
-    const nx = round(h)
-    if (pts.some((p) => Math.abs(p.x - nx) < 0.02)) return // a point already sits here
-    writePts([...pts, { x: nx, y: 0.5 }])
+  // Eyedropper: while a curve tab is open, the Viewer lets you click the image to
+  // drop control points at the pixel's x-axis value (hue, luma, or saturation).
+  // Adds three points: one at the picked value (y = 0.5 = neutral) and one a
+  // small step to each side, so you get a visible notch and two drag handles.
+  const PICK_OFFSET = 0.04
+  const addPickedPoint = (rgb: [number, number, number]) => {
+    if (count + 2 > MAX) return // need room for up to 3 points
+    const [r, g, b] = rgb
+    let nx: number | null = null
+    if (ch === 'hh' || ch === 'hs' || ch === 'hl') {
+      nx = rgbToHue(r, g, b)
+    } else if (ch === 'ls') {
+      nx = rgbToLuma(r, g, b)
+    } else if (ch === 'ss' || ch === 'sl') {
+      nx = rgbToSat(r, g, b)
+    }
+    if (nx === null) return
+    // Build three points: left, center, right (clamped to [0, 1]). Skip a side
+    // if it would coincide with the centre (e.g. when the pick lands on 0 or 1).
+    const lo = round(Math.max(0, nx - PICK_OFFSET))
+    const mid = round(nx)
+    const hi = round(Math.min(1, nx + PICK_OFFSET))
+    const add: Pt[] = []
+    if (lo < mid) add.push({ x: lo, y: 0.5 })
+    if (!add.some((p) => Math.abs(p.x - mid) < 0.005)) add.push({ x: mid, y: 0.5 })
+    if (hi > mid && !add.some((p) => Math.abs(p.x - hi) < 0.005)) add.push({ x: hi, y: 0.5 })
+    // Skip if all proposed positions already have a point nearby.
+    const all = [...pts, ...add]
+    if (add.every((p) => pts.some((q) => Math.abs(q.x - p.x) < 0.02))) return
+    writePts(all)
   }
   const setEyedropPick = useEditor((s) => s.setEyedropPick)
   // Keep a live ref so the registered picker always sees the current points,
   // without re-registering (and re-rendering the Viewer) on every edit.
-  const pickRef = useRef(addPickedHuePoint)
-  pickRef.current = addPickedHuePoint
+  const pickRef = useRef(addPickedPoint)
+  pickRef.current = addPickedPoint
   useEffect(() => {
     if (!isHue) return undefined
     setEyedropPick((rgb) => pickRef.current(rgb))
     return () => setEyedropPick(null)
   }, [isHue, setEyedropPick])
+
+  // Clear the active-point selection when switching channels.
+  useEffect(() => {
+    setActivePt(null)
+  }, [ch])
 
   // Sample the (possibly splined) curve for the polyline, remapped by the ceiling.
   const line = Array.from({ length: 65 }, (_, k) => {
@@ -411,6 +528,36 @@ export function CurveEditor({
           ))}
           <span className="mx-0.5 h-4 w-px bg-border" />
           {HUE_CURVES.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => setCh(c.id)}
+              className={cn(
+                'rounded px-1.5 py-1 text-[11px] font-medium transition-colors',
+                ch === c.id
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {c.label}
+            </button>
+          ))}
+          {LUMA_CURVES.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => setCh(c.id)}
+              className={cn(
+                'rounded px-1.5 py-1 text-[11px] font-medium transition-colors',
+                ch === c.id
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {c.label}
+            </button>
+          ))}
+          {SAT_CURVES.map((c) => (
             <button
               key={c.id}
               type="button"
@@ -477,6 +624,7 @@ export function CurveEditor({
           // pointerdown that reaches the svg is on empty space: add a point and
           // immediately start dragging it. (Don't gate on e.target — clicks that
           // land on the grid/curve/histogram should add too, not be rejected.)
+          setActivePt(null)
           if (e.button !== 0 || count >= MAX) return
           const p = fromEvent(e.clientX, e.clientY)
           const nx = round(p.x)
@@ -498,8 +646,8 @@ export function CurveEditor({
         {/* Decorative layers ignore pointer events so the draggable handles
             below are the only interactive children; clicks anywhere else fall
             through to the svg's onPointerDown and add a point. */}
-        {/* Hue curves get a rainbow x-axis strip; tone curves the signal histogram. */}
-        {isHue ? (
+        {/* Hue curves get a rainbow x-axis strip; lum/sat curves get greyscale; tone curves get RGB histogram. */}
+        {ch === 'hh' || ch === 'hs' || ch === 'hl' ? (
           <>
             <defs>
               <linearGradient id="hue-axis" x1="0" y1="0" x2="1" y2="0">
@@ -521,6 +669,42 @@ export function CurveEditor({
             {hueHist && (
               <polygon
                 points={histPoly(hueHist)}
+                fill="rgba(255,255,255,0.22)"
+                stroke="none"
+                pointerEvents="none"
+              />
+            )}
+          </>
+        ) : ch === 'ls' || ch === 'ss' || ch === 'sl' ? (
+          <>
+            <defs>
+              <linearGradient id="lum-axis" x1="0" y1="0" x2="1" y2="0">
+                {LUM_STOPS.map((c, i) => {
+                  const offset = `${(i / (LUM_STOPS.length - 1)) * 100}%`
+                  return <stop key={offset} offset={offset} stopColor={c} />
+                })}
+              </linearGradient>
+            </defs>
+            <rect
+              x={0}
+              y={0}
+              width={VBW}
+              height={VBH}
+              fill="url(#lum-axis)"
+              opacity={0.12}
+              pointerEvents="none"
+            />
+            {lumaHist && ch === 'ls' && (
+              <polygon
+                points={histPoly(lumaHist)}
+                fill="rgba(255,255,255,0.22)"
+                stroke="none"
+                pointerEvents="none"
+              />
+            )}
+            {satHist && (ch === 'ss' || ch === 'sl') && (
+              <polygon
+                points={histPoly(satHist)}
                 fill="rgba(255,255,255,0.22)"
                 stroke="none"
                 pointerEvents="none"
@@ -638,17 +822,20 @@ export function CurveEditor({
             key={`${p.x}-${p.y}`}
             cx={p.x * VBW}
             cy={toScreenY(p.y)}
-            r={2.6}
-            fill={color}
-            stroke="#000"
-            strokeWidth={0.6}
+            r={activePt === i ? 3.8 : 2.6}
+            fill={activePt === i ? '#fff' : color}
+            stroke={activePt === i ? color : '#000'}
+            strokeWidth={0.8}
             className="cursor-grab"
             onPointerDown={(e) => {
               if (e.button !== 0) return // let right-click fall through to remove
               e.stopPropagation()
+              setActivePt(i)
               dragIndex.current = i
               svgRef.current?.setPointerCapture(e.pointerId)
             }}
+            onPointerEnter={() => setActivePt(i)}
+            onPointerLeave={() => setActivePt((prev) => (dragIndex.current !== null ? prev : null))}
             onContextMenu={(e) => {
               e.preventDefault()
               e.stopPropagation()
@@ -657,10 +844,63 @@ export function CurveEditor({
           />
         ))}
       </svg>
+
+      {/* X/Y sliders for the active point — lets you nudge a point precisely
+          without having to drag it manually across the curve area. */}
+      {activePt !== null && activePt < pts.length && (
+        <div className="flex items-center gap-3 px-1">
+          {(
+            [
+              { label: 'X', key: 'x', min: 0, max: 1 },
+              { label: 'Y', key: 'y', min: 0, max: 1 },
+            ] as const
+          ).map((axis) => {
+            const ap = activePt
+            const val = ap !== null ? (pts[ap]?.[axis.key] ?? 0) : 0
+            return (
+              <div key={axis.key} className="flex items-center gap-1.5">
+                <span className="w-3 text-[10px] font-mono text-muted-foreground">
+                  {axis.label}
+                </span>
+                <Slider
+                  className="w-20"
+                  value={[val]}
+                  min={axis.min}
+                  max={axis.max}
+                  step={0.005}
+                  onValueChange={(next) => {
+                    const v = Array.isArray(next) ? next[0] : (next as number)
+                    if (v === undefined || ap === null) return
+                    const nextPts = pts.map((q) => Object.assign({}, q))
+                    const target = nextPts[ap]
+                    if (!target) return
+                    if (axis.key === 'x') target.x = round(v)
+                    else target.y = round(v)
+                    const patch: NodeValues = {
+                      [`crv${ch}_n`]: nextPts.length,
+                    }
+                    nextPts.forEach((q, k) => {
+                      patch[`crv${ch}_x${k}`] = q.x
+                      patch[`crv${ch}_y${k}`] = q.y
+                    })
+                    onChange(patch)
+                  }}
+                />
+                <span className="w-9 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground">
+                  {val.toFixed(3)}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       <p className="text-[10px] text-muted-foreground">
-        {isHue
-          ? 'x = source hue · drag to shift · click the image to drop a point · right-click to remove'
-          : 'Click + drag to add · right-click to remove · Spline for curves'}
+        {ch === 'hh' || ch === 'hs' || ch === 'hl'
+          ? 'x = source hue · click the image to drop points · right-click to remove'
+          : isHue
+            ? 'Click the image to drop points · right-click to remove'
+            : 'Click + drag to add · right-click to remove · Spline for curves'}
       </p>
     </div>
   )
