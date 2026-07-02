@@ -9,6 +9,7 @@ import { type FxInstance, type LoadedLut, type NodeValues, useEditor } from '../
 import { ChromaWarp } from './chroma-warp'
 import { ColorWheels } from './color-wheels'
 import { CurveEditor } from './curve-editor'
+import { InfoTip } from './info-tip'
 import { Button } from '../ui/button'
 import {
   DropdownMenu,
@@ -70,16 +71,16 @@ export function Inspector() {
       <div className="border-b border-border px-2 py-1.5">
         <TabsList variant="line" className="h-auto w-full justify-start gap-1">
           <TabsTrigger value="primaries" className="flex-none">
-            Primaries
+            Primaries <InfoTip descKey="primaries" side="bottom" />
           </TabsTrigger>
           <TabsTrigger value="hdr" className="flex-none">
-            HDR
+            HDR <InfoTip descKey="hdr" side="bottom" />
           </TabsTrigger>
           <TabsTrigger value="curves" className="flex-none">
-            Curves
+            Curves <InfoTip descKey="curves" side="bottom" />
           </TabsTrigger>
           <TabsTrigger value="chroma" className="flex-none">
-            Chroma Warp
+            Chroma Warp <InfoTip descKey="chroma" side="bottom" />
           </TabsTrigger>
           <TabsTrigger value="fx" className="ml-auto min-w-0 max-w-[220px] flex-none justify-start">
             <span className="truncate">{fxTabLabel(extraFx)}</span>
@@ -223,6 +224,7 @@ function FxPanel({
           style={{ background: def.accent ?? 'var(--muted-foreground)' }}
         />
         <span className="text-xs font-medium">{def.label}</span>
+        <InfoTip descKey={def.type} side="bottom" />
         {onRemove && (
           <button
             type="button"

@@ -1,4 +1,5 @@
 import { useRef } from 'react'
+import { InfoTip } from './info-tip'
 import { type NodeDef, PRIMARY_SLIDERS } from '@grade/nodes'
 import { RotateCcw } from 'lucide-react'
 import type { NodeValues } from '../../editor/store'
@@ -169,6 +170,7 @@ function Wheel({
     <div className="flex flex-col items-center gap-2">
       <div className="flex w-full items-center justify-between px-1">
         <span className="text-[11px] font-medium">{label}</span>
+        <InfoTip descKey={prefix} side="bottom" />
         <button
           type="button"
           onClick={reset}

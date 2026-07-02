@@ -4,6 +4,7 @@ import { RotateCcw } from 'lucide-react'
 import { Slider } from '../../components/ui/slider'
 import { type NodeValues, useEditor } from '../../editor/store'
 import { cn } from '../../lib/utils'
+import { InfoTip } from './info-tip'
 
 // The shader's per-curve control-point cap (x0..x{N-1}); kept in lockstep by
 // importing the same constant the kernel is generated from.
@@ -572,6 +573,18 @@ export function CurveEditor({
               {c.label}
             </button>
           ))}
+          <InfoTip
+            descKey={
+              ch === 'm'
+                ? 'luma_curve'
+                : ch === 'r'
+                  ? 'red_curve'
+                  : ch === 'g'
+                    ? 'green_curve'
+                    : 'blue_curve'
+            }
+            side="bottom"
+          />
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -591,17 +604,22 @@ export function CurveEditor({
           </button>
           {/* Hue curves are always splined, so the toggle only applies to tone. */}
           {!isHue && (
-            <button
-              type="button"
-              onClick={() => onChange({ crv_smooth: !smooth })}
-              className={cn(
-                'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
-                smooth ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
-              )}
-              title="Toggle spline (smooth) interpolation"
-            >
-              Spline
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => onChange({ crv_smooth: !smooth })}
+                className={cn(
+                  'rounded px-2 py-0.5 text-[11px] font-medium transition-colors',
+                  smooth
+                    ? 'bg-muted text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                title="Toggle spline (smooth) interpolation"
+              >
+                Spline
+              </button>
+              <InfoTip descKey="curve_smooth" side="bottom" />
+            </>
           )}
           <button
             type="button"
